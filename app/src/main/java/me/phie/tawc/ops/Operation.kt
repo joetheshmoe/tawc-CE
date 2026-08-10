@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
  *     viewers keep their last-rendered state frozen.
  *
  * The default impl is [MutableOperation] — see [InstallationService] for
- * the canonical use, and [me.phie.tawc.dev.ExecBrokerSession]'s OP_TITLE
+ * the canonical use, and `me.phie.tawc.dev.ExecBrokerSession`'s OP_TITLE
  * mirror path for a broker-driven one.
  */
 interface Operation {

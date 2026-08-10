@@ -32,7 +32,7 @@ object NativeBridge {
 
     /** Outbound calls to the system IME (showSoftInput, updateSelection,
      *  …) go through this. Default is the production [RealImeOutput];
-     *  the dev `test-init` broker action swaps in a [RecordingImeOutput]
+     *  the dev `test-init` broker action swaps in a `RecordingImeOutput`
      *  so input integration tests don't race the system IME's reaction
      *  to `updateSelection`. See [ImeOutput] kdoc. */
     @Volatile var imeOutput: ImeOutput = RealImeOutput
@@ -75,8 +75,8 @@ object NativeBridge {
 
     /**
      * Look up the live [CompositorService], if any. Public-but-internal
-     * for the dev broker action handlers (see
-     * [me.phie.tawc.dev.InputActions]) — no production code should reach
+     * for the dev broker action handlers (see `me.phie.tawc.dev.InputActions`,
+     * debug builds only) — no production code should reach
      * for this; use [attachService]/[detachService] instead.
      */
     fun serviceRefForDev(): CompositorService? = serviceRef?.get()
@@ -189,7 +189,7 @@ object NativeBridge {
     // these — because that would bypass the IC's state machine
     // (`computeReplaceDeltas`, the Editable mirror, the
     // `composingRegionIsPreedit` short-circuit) and let wayland-side
-    // fallback behaviour hide IC bugs. See [me.phie.tawc.dev.InputActions].
+    // fallback behaviour hide IC bugs. See `me.phie.tawc.dev.InputActions`.
 
     /** commitText from InputConnection. `deleteBefore`/`deleteAfter` are
      *  UTF-16 code-unit counts around the cursor that should be removed

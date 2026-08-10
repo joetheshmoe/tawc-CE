@@ -332,8 +332,22 @@ val checkInputConnectionAudit = tasks.register<Exec>("checkInputConnectionAudit"
     inputs.file("$rootDir/scripts/check-inputconnection-audit.sh")
 }
 
+// The exec broker and its actions live in `src/debug/java`, so they are
+// structurally absent from release builds rather than merely unstarted
+// (notes/exec-broker.md). Assert that on the compiled release classes —
+// cheap, since compileReleaseKotlin needs no native/asset work. The same
+// script runs over the finished APK's dex from
+// scripts/build-release-apk.sh.
+val checkNoDevCode = tasks.register<Exec>("checkNoDevCode") {
+    dependsOn("compileReleaseKotlin", "compileReleaseJavaWithJavac")
+    workingDir = rootProject.projectDir
+    commandLine("scripts/check-no-dev-code.sh")
+    inputs.file("$rootDir/scripts/check-no-dev-code.sh")
+    inputs.dir(layout.buildDirectory.dir("tmp/kotlin-classes/release"))
+}
+
 tasks.named("check") {
-    dependsOn(checkInputConnectionAudit)
+    dependsOn(checkInputConnectionAudit, checkNoDevCode)
 }
 
 val rustTripleFor = mapOf(

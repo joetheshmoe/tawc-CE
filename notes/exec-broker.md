@@ -1,6 +1,7 @@
 # Dev exec broker
 
-A debug-build-only in-app service that lets the host run commands as the
+A debug-build-only in-app service — compiled into debug APKs only, not
+merely disabled in release — that lets the host run commands as the
 app uid/domain — same SELinux context (`untrusted_app`) the production
 launch path uses. Replaces all `run-as` and most `su` use in dev/test
 workflows with a path that genuinely mirrors how things execute when a
@@ -240,14 +241,32 @@ sure "anything" is just the dev workflow, not random apps on the device.
 
 Two layers of defense:
 
-### 1. Build-type gate
+### 1. Source-set gate
 
-`ExecBrokerService` is only instantiated when `BuildConfig.DEBUG`. The
-`MainActivity` startup code has an `if (BuildConfig.DEBUG)` guard
-around `startForegroundService`, and the service's `onStartCommand`
-double-checks. **Release APKs never bind the socket.** A user phone
-that ships a release build has zero exposure even if the per-connection
-auth had a bug.
+**Release APKs don't contain the broker at all.** `ExecBroker`,
+`ExecBrokerSession`, `ActionRegistry` and every `BrokerAction` live in
+`app/src/debug/java`, which only the debug variant compiles. The
+release variant sees the same call site — `DevHooks.start(this)` in
+`TawcApplication.onCreate` — but resolves it to the empty
+`src/release/java` twin of `me.phie.tawc.DevHooks`.
+
+This is stronger than the old `if (BuildConfig.DEBUG)` guard: there is
+no socket-binding code in the artifact to be reached by a bug, a
+reflection call, or a future refactor. `scripts/check-no-dev-code.sh`
+asserts it against the compiled release classes (Gradle
+`:app:checkNoDevCode`, wired into `check`) and against the finished APK's
+dex (run from `scripts/build-release-apk.sh`). Verify by hand with:
+
+```
+./gradlew :app:assembleRelease
+apkanalyzer dex packages app/build/outputs/apk/release/app-release-unsigned.apk |
+  grep 'me\.phie\.tawc\.dev'   # prints nothing
+```
+
+Tradeoff: a *release*-type build can never drive the broker — e.g. to
+profile a release APK on device with the test actions. That would need
+a third build type (or a product flavor) that compiles the debug source
+set; nothing here supports it today.
 
 ### 2. `SO_PEERCRED` on every connection
 
@@ -288,13 +307,14 @@ abstract socket bound by `untrusted_app`. On userdebug/eng builds and
 debug-built apps, `adbd` is generally allowed to connect to abstract
 sockets exposed by debuggable apps (the same mechanism LLDB and
 profiling tools use). On user builds + release apps the connection
-typically wouldn't go through, but we don't ship the broker on
+typically wouldn't go through, but the broker isn't compiled into
 release builds anyway.
 
 ## Lifecycle
 
 The broker is a plain background thread spawned from
-`TawcApplication.onCreate` (debug builds only) — *not* a Service. We
+`TawcApplication.onCreate` → `DevHooks.start` (debug source set only,
+see the security model above) — *not* a Service. We
 went through a foreground-service version first, but
 `startForegroundService` from `Application.onCreate` is unreliable on
 Android 12+ when the cold-start was driven by something other than a
@@ -303,14 +323,25 @@ the broker has no UI / notification needs of its own. A daemon thread
 plus the kernel keeping the process alive while it has user threads is
 enough.
 
-`TawcApplication.onCreate` also calls
+`DevHooks.start` also calls
 `me.phie.tawc.install.InstallActions.registerAll()` (install /
 uninstall), `me.phie.tawc.dev.InputActions.registerAll()` (the test
 input handlers below), `me.phie.tawc.dev.SettingsActions.registerAll()`
 (the settings get/set actions below), and
 `me.phie.tawc.launcher.LauncherActions.registerAll()` (launcher list /
 hide state) to populate `ActionRegistry` before any client connection
-arrives.
+arrives. All four, plus `DevActivityTracker` and the compositor's
+`RecordingImeOutput`, are debug-source-set classes.
+
+A handful of *hooks* the actions call do stay in `src/main`, because
+they read or mutate private state of production classes:
+`Settings.enterTestMode()`, `InstallationStore.setAndoOverride` /
+`clearAndoOverride` / `clearAndoOverrides`,
+`NativeBridge.serviceRefForDev()` / `imeOutput` /
+`nativeCloseAllClientsForTest()`, and
+`ClipboardBridge.setTextFromDevAction` / `getTextForDevAction`. They
+ship in the release DEX with no caller. Each is documented as test-only
+at its definition.
 
 ## Registered actions
 
@@ -547,8 +578,8 @@ through the broker.
 
 ## See also
 
-- `app/src/main/java/me/phie/tawc/dev/ExecBroker.kt` — the listener.
-- `app/src/main/java/me/phie/tawc/dev/ExecBrokerSession.kt` — per-
+- `app/src/debug/java/me/phie/tawc/dev/ExecBroker.kt` — the listener.
+- `app/src/debug/java/me/phie/tawc/dev/ExecBrokerSession.kt` — per-
   connection logic (header parsing, frame routing, descendant kill).
 - `tests/integration/src/exec_broker.rs` — host helper library.
 - `tests/integration/src/bin/tawc-exec.rs` — CLI wrapper for scripts.

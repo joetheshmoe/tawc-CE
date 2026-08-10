@@ -99,6 +99,9 @@ fi
 
 [ -f "$UNSIGNED" ] || { echo "ERROR: $UNSIGNED not found (drop --no-build to build it)" >&2; exit 1; }
 
+echo "=== Checking for dev-only code ==="
+"$SCRIPT_DIR/check-no-dev-code.sh" "$UNSIGNED"
+
 echo "=== Zipaligning ==="
 "$ZIPALIGN" -p -f 4 "$UNSIGNED" "$ALIGNED"
 

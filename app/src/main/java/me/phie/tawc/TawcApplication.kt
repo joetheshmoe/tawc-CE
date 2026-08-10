@@ -2,7 +2,6 @@ package me.phie.tawc
 
 import android.app.Application
 import android.util.Log
-import me.phie.tawc.dev.ExecBroker
 import me.phie.tawc.install.BootstrapCache
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.RootfsTmpSweeper
@@ -17,7 +16,7 @@ import kotlin.concurrent.thread
  *  - Sweep stale bootstrap-tarball cache entries — the OS only evicts
  *    `cacheDir` under storage pressure, so a 200 MB tarball can squat
  *    on disk for months without our own TTL ([BootstrapCache.sweepStale]).
- *  - Start the dev exec broker (debug builds only).
+ *  - Start the dev exec broker (debug builds only — [DevHooks]).
  *
  * Per-install `nativeLibraryDir` (which moves between APKs as
  * `/data/app/~~<hash>/...`) is resolved fresh in
@@ -80,22 +79,11 @@ class TawcApplication : Application() {
                 Log.w(TAG, "rootfs /tmp sweep failed", t)
             }
         }
-        // Dev-only exec broker. Started here (not from MainActivity)
-        // so it's available no matter which Activity / Service the
-        // cold-start went through — the install + integration test
-        // flows often start at InstallActivity. Release builds skip
-        // this entirely. See notes/exec-broker.md.
-        if (BuildConfig.DEBUG) {
-            registerActivityLifecycleCallbacks(me.phie.tawc.dev.DevActivityTracker)
-            ExecBroker.start(this)
-            // Action handlers must register before any host connection;
-            // the broker thread spawned by start() above accepts asynchronously
-            // but won't dispatch ACTION headers to a missing handler.
-            me.phie.tawc.install.InstallActions.registerAll()
-            me.phie.tawc.dev.InputActions.registerAll()
-            me.phie.tawc.dev.SettingsActions.registerAll()
-            me.phie.tawc.launcher.LauncherActions.registerAll()
-        }
+        // Dev-only exec broker and its action handlers. [DevHooks] has
+        // two implementations at the same FQCN — the real one in
+        // `src/debug/java`, an empty one in `src/release/java` — so the
+        // broker isn't in the release APK at all. See notes/exec-broker.md.
+        DevHooks.start(this)
     }
 
     companion object {

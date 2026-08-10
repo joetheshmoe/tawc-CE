@@ -271,9 +271,9 @@ class InstallationStore(context: Context) {
          * so a production caller would silently grant ando to a distro
          * the user turned off — and the [DistroInfoActivity] checkbox
          * (which renders the metadata value) would keep showing it as
-         * disabled. The only legitimate caller is the debug-only
-         * `set-ando` broker action, which is registered exclusively
-         * under `BuildConfig.DEBUG`.
+         * disabled. The only legitimate caller is the `set-ando`
+         * broker action, which is compiled into debug builds only
+         * (`src/debug/java`).
          */
         fun setAndoOverride(id: String, enabled: Boolean) {
             andoOverrides[id] = enabled

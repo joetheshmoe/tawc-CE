@@ -91,7 +91,8 @@ object ClipboardBridge {
         cm.setPrimaryClip(ClipData.newPlainText(OWN_CLIP_LABEL, text))
     }
 
-    /** [asHtml] mimics Firefox/Gecko web-content copies: an HTML clip whose
+    /** Debug-only write; production copies go through [setTextFromCompositor].
+     *  [asHtml] mimics Firefox/Gecko web-content copies: an HTML clip whose
      *  description has no text/plain MIME but whose item carries the text.
      *  The label is deliberately not [OWN_CLIP_LABEL] so dev clips announce
      *  like a foreign app's. */
