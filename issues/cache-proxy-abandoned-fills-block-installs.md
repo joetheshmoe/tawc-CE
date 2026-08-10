@@ -29,6 +29,14 @@ then completed.
    can time out waiting for response headers while nginx is still
    writing large temp files.
 
+Seen again 2026-08-10 on the emulator with a Void bootstrap: the app
+sat 300 s (Downloader's `readTimeout`) in
+`Http1xStream.readResponseHeaders` before throwing, while
+`tmp/proxy/` held several growing temp files. A host `curl` for the
+same URL a few minutes later got response headers in 0.8 s and the
+retried install went through. `proxy_cache_lock on` in
+`scripts/cache-proxy.conf` is a suspect worth checking.
+
 ## Possible Fixes
 
 - Configure nginx so it stops cache fills promptly after the client

@@ -83,11 +83,13 @@ object SignatureVerifier {
      * when the upstream bootstrap source hands us the digest out of
      * band (e.g. GitHub Releases API `digest` field, OCI manifest
      * digest) — no PGP signature, no checksum sidecar, but the digest
-     * is fetched from a single trusted HTTPS endpoint by the caller's
-     * `resolveBootstrap` and passed in here. The integrity story is
-     * "trust this single TLS endpoint"; weaker than PGP — it catches
-     * mid-download corruption / redirect-to-different-host, but a
-     * compromised origin serves a matching tarball/digest pair.
+     * is fetched over HTTPS by the caller's `resolveBootstrap` and
+     * passed in here. How much that digest is worth depends on the
+     * caller: for Debian/Manjaro it's "trust this single TLS
+     * endpoint", so a compromised origin serves a matching
+     * tarball/digest pair; for Void the digest comes from a manifest
+     * with a verified minisign signature from an independent key
+     * origin. See notes/installation.md "Bootstrap integrity".
      */
     private fun verifySha256(
         tarball: File,
@@ -414,10 +416,15 @@ sealed class BootstrapVerification {
      * trusted HTTPS endpoint, e.g. the GitHub Releases REST API
      * `digest` field or an OCI manifest blob digest). Catches mid-
      * download corruption and redirect-to-different-host as a sanity
-     * check; the security stance still rests on the TLS endpoint
-     * that produced the digest — when that endpoint also serves the
-     * tarball (Void, Debian, Manjaro today), a compromised origin
-     * defeats it. Weaker than [Pgp] (no detached-key chain).
+     * check; the security stance still rests on whatever produced the
+     * digest — when that is a TLS endpoint which also serves the
+     * tarball (Debian, Manjaro today), a compromised origin defeats
+     * it. Void is the exception: its digest comes out of a manifest
+     * whose minisign signature
+     * [me.phie.tawc.install.distro.voidlinux.VoidSha256Resolver] has
+     * already checked against a key from a second origin, so the same
+     * variant carries a stronger story there. Weaker than [Pgp] (no
+     * detached-key chain) in the general case.
      */
     data class Sha256(
         val expectedHex: String,

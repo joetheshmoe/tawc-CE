@@ -97,11 +97,12 @@ suitable for a chroot, fresh-enough packages for a desktop browser.
 - Best pick if "minimal + rolling" is the goal.
 - **Currently shipped** (see top of this note +
   `install/distro/voidlinux/`).
-- Bootstrap integrity: SHA-256 from upstream `sha256sum.txt` over
-  HTTPS — same trust profile as Manjaro ARM (single trusted HTTPS
-  endpoint). Void *does* publish a minisign signature but minisign
-  is Ed25519-based and we'd need a separate verifier; the
-  HTTPS-fetched SHA-256 is a defensible floor in the meantime.
+- Bootstrap integrity: SHA-256 from upstream `sha256sum.txt`, whose
+  minisign (Ed25519) signature we verify against a per-image-date
+  release key published in void-packages on GitHub — a second origin,
+  so this is stronger than the single-HTTPS-endpoint profile the other
+  `Sha256` distros have. See notes/installation.md "Bootstrap
+  integrity".
 - Downside: smaller package repo than Debian/Arch. Things like Firefox,
   GTK, weston are fine; long-tail desktop apps less so.
 

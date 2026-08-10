@@ -221,6 +221,7 @@ The package is split into three layers:
 | `Su.kt`                        | Wrapper around Magisk `su`. Pipes the script via stdin (no shell-quoting headaches), streams combined stdout/stderr line-by-line via a callback. |
 | `Downloader.kt`                | HTTP downloader for bootstrap tarballs. Caches by content length. |
 | `SignatureVerifier.kt`         | Sealed `BootstrapVerification` (`ResolvedAtInstallTime` / `Pgp` / `CrossMirrorMd5` / `Sha256`) and `verify(...)`. Called from [Installer] between download and extract — see *Bootstrap integrity* below. Uses BouncyCastle (`bcpg-jdk18on` + `bcprov-jdk18on`) for the OpenPGP layer. Treat as load-bearing security code. |
+| `Minisign.kt`                  | Minisign/signify (Ed25519, plain `Ed` and BLAKE2b-512-prehashed `ED`) detached-signature parsing + verification, on BouncyCastle's low-level `Ed25519Signer` / `Blake2bDigest`. Used by [VoidSha256Resolver] to authenticate Void's `sha256sum.txt` before any digest is read out of it. Also load-bearing security code. |
 | `BootstrapCache.kt`            | Sole owner of `<cacheDir>/install/`. `download(arch, url, format, …)` is the single entry point: it mkdirs, fetches via [Downloader], and refreshes the file's mtime so the TTL counts from "last used" rather than "first downloaded". Also exposes `tempFifoFor(arch)` for [Archive]'s zstd→tar streaming FIFO so the transient lives in the cache dir under one owner. `sweepStale` runs a two-pass janitor: TTL eviction (7 days) for canonical `bootstrap-<cacheKey>.tar.{zst,gz}`; unconditional deletion of `*.fifo`, legacy `*.tmp`, and `*.part` (transients are never valid across processes). Also defines the `BootstrapFormat` enum. |
 | `Archive.kt`                   | Tar extraction. Plain `.tar` / `.tar.gz` get handed to `toybox tar` directly; `.tar.zst` is streamed in-process through a named pipe (`bootstrap-<cacheKey>.tar.fifo`) so the ~700 MB plaintext never lands on disk. Never wipes — install only runs against an empty slot. |
 | `RootfsCleaner.kt`             | The one and only delete path, for every install method: kill guest processes → unmount (chroot only) → refuse if any mount remains under the install dir → two-pass `find -xdev -depth -delete` (su-first for chroot, app-uid with one su retry otherwise). The chroot-only facts come from the metadata-recorded method key, not a live `InstallationMethod`, so disabled-method slots still wipe correctly. Used by uninstall; never by install. `RootfsCleanerTripwireTest` fails on recursive deletes elsewhere in the app sources. |
@@ -235,7 +236,8 @@ The package is split into three layers:
 | `distro/manjaro/GitHubReleaseResolver.kt` | Tiny `api.github.com /releases/latest` client. Returns `(browser_download_url, sha256)` for a named asset by reading the API response's `digest` field. |
 | `distro/manjaro/ManjaroArm.kt` | Manjaro ARM aarch64 (`manjaro-arm/rootfs` GitHub release gz; `archlinuxarm manjaro manjaro-arm` keyring set). `resolveBootstrap` does the GitHub-API lookup at install time so we always pull the latest weekly tag with a verifiable SHA-256. |
 | `distro/voidlinux/VoidCommon.kt` | Shared helpers for the two Void Linux flavours. `xbps-install -Suy xbps` then `xbps-install -uy` for the keyring/sync stage, followed by `xbps-install -y <packages>`. RSA package signatures are verified against the keys shipped in the bootstrap under `/var/db/xbps/keys/`. |
-| `distro/voidlinux/VoidSha256Resolver.kt` | Fetches `sha256sum.txt` from `repo-default.voidlinux.org/live/current/` over HTTPS at install time, parses out the latest `void-<arch>-ROOTFS-YYYYMMDD.tar.xz` filename + SHA-256, and hands them to the installer as a [BootstrapVerification.Sha256]. |
+| `distro/voidlinux/VoidSha256Resolver.kt` | Fetches `sha256sum.txt` from `repo-default.voidlinux.org/live/current/` over HTTPS at install time, verifies its `sha256sum.sig` minisign signature against the release key for the image date ([Minisign] + [VoidReleaseKeys]), then parses out the latest `void-<arch>-ROOTFS-YYYYMMDD.tar.xz` filename + SHA-256 and hands them to the installer as a [BootstrapVerification.Sha256]. Fails closed if the signature is missing, bad, or no key for the image date can be obtained. |
+| `distro/voidlinux/VoidReleaseKeys.kt` | Void's per-image-date minisign release public keys, bundled verbatim from `srcpkgs/void-release-keys/files/` in void-linux/void-packages, plus the `raw.githubusercontent.com` URL used to fetch a key for an image date newer than this APK. |
 | `distro/voidlinux/VoidLinuxX86_64.kt` | Void Linux x86_64 (glibc). Bootstrap is the dated `tar.xz` ROOTFS published under `live/current/`. |
 | `distro/voidlinux/VoidLinuxAarch64.kt` | Void Linux aarch64 (glibc). Same flow as the x86_64 flavour, different bootstrap URL and ABI. |
 | `distro/apt/AptCommon.kt`      | Shared apt-family helpers: deb822 sources, apt.conf, dpkg `path-exclude`, apt-family `/etc/profile.d/tawc.sh`, shell-default stubs, `apt-get update`, `apt-get dist-upgrade`, and base package install. |
@@ -737,11 +739,11 @@ Hard rules:
 | Arch x86_64 (`geo.mirror.pkgbuild.com`, HTTPS) | PGP detached signature `<tarball>.sig`, against Pierre Schmitz's Arch developer key (`3E80 CA1A 8B89 F69C BA57 D98A 76A5 EF90 5444 9A5C`) shipped at `res/raw/arch_signing_key.asc` | `BootstrapVerification.Pgp` in `ArchLinuxX86_64.kt` |
 | ALARM aarch64 (`fl.us.mirror.archlinuxarm.org`, HTTPS) | Cross-mirror MD5 cross-check: `.md5` fetched over HTTPS from `fl.us.` and `ca.us.` (independently-operated mirrors with their own valid certs), digests must agree byte-for-byte, then the tarball's MD5 must match | `BootstrapVerification.CrossMirrorMd5` in `ArchLinuxArm.kt` |
 | Manjaro ARM aarch64 (`github.com/manjaro-arm/rootfs/releases`, HTTPS) | SHA-256 from the GitHub Releases REST API: `api.github.com/repos/manjaro-arm/rootfs/releases/latest` returns the asset's server-computed `digest: sha256:<hex>`. We fetch that JSON over HTTPS in `ManjaroArm.resolveBootstrap`, then verify the downloaded tarball's SHA-256 matches before extract | `BootstrapVerification.Sha256` (Manjaro path) in `ManjaroArm.kt` |
-| Void Linux x86_64 / aarch64 glibc (`repo-default.voidlinux.org/live/current/`, HTTPS) | SHA-256 from upstream `sha256sum.txt`. We fetch the manifest over HTTPS in `VoidSha256Resolver.resolveLatest`, parse out the matching `void-<arch>-ROOTFS-*.tar.xz` line, and verify the downloaded tarball's SHA-256 matches before extract. Trust profile is the same single-HTTPS-endpoint stance as Manjaro ARM | `BootstrapVerification.Sha256` (Void path) in `VoidLinux{X86_64,Aarch64}.kt` |
+| Void Linux x86_64 / aarch64 glibc (`repo-default.voidlinux.org/live/current/`, HTTPS) | SHA-256 from upstream `sha256sum.txt`, **and** the minisign (Ed25519) signature `sha256sum.sig` over that manifest, checked against the per-image-date Void release key — bundled in `VoidReleaseKeys` from void-packages on GitHub, i.e. a second origin. `VoidSha256Resolver.resolveLatest` verifies the signature before trusting any digest from the manifest, then the tarball's SHA-256 is checked before extract | `Minisign.kt` + `VoidSha256Resolver.kt`, yielding `BootstrapVerification.Sha256` in `VoidLinux{X86_64,Aarch64}.kt` |
 | Debian sid x86_64 / aarch64 (`raw.githubusercontent.com/debuerreotype/docker-debian-artifacts`, HTTPS) | SHA-256 from the official debuerreotype Docker artifact OCI manifest. We resolve the `dist-amd64` / `dist-arm64v8` branch tip to a commit SHA via the GitHub API, fetch `image-manifest.json` at that pinned commit, read the single gzip layer digest, then verify `rootfs.tar.gz` (fetched from the same commit) against it before extract. Commit-pinning closes the mutable-branch race; the trust profile is still a single HTTPS origin (digest and tarball from the same repo) plus OCI digest sanity check | `BootstrapVerification.Sha256` (Debian path) in `DebianSid.kt` / `DebianDockerResolver.kt` |
 | In-chroot pacman packages | Default `SigLevel = Required DatabaseOptional`, against the keyring populated by `pacman-key --populate archlinux` / `archlinuxarm` / `archlinuxarm manjaro manjaro-arm` | `ArchPacmanCommon.kt` (the `Never` line was removed, `--populate` is no longer `\|\| true`'d) |
 
-### Same-origin SHA-256 bootstraps (Manjaro / Void / Debian): trust profile
+### Same-origin SHA-256 bootstraps (Manjaro / Debian): trust profile
 
 Manjaro ARM is intermediate between the strong Arch x86_64 PGP path
 and the weaker ALARM cross-mirror MD5. Upstream doesn't sign with
@@ -771,26 +773,75 @@ MD5 (both rely on a single HTTPS endpoint's trust). When upstream
 Manjaro starts shipping a detached PGP signature we should switch
 over.
 
-The same analysis applies to the other two `Sha256` distros, with
-one aggravating detail: their digest comes from the **same origin**
-as the tarball, so it is a corruption/host-swap check, not an
-integrity barrier against a compromised origin or a mis-issued cert.
+The same analysis applies to Debian sid, with one aggravating detail:
+its digest and tarball both come from the debuerreotype GitHub repo,
+so it is a corruption/host-swap check, not an integrity barrier
+against a compromised origin or a mis-issued cert. The branch tip is
+commit-pinned via the GitHub API before either fetch (closes the
+mutable-branch / force-push race), but Debian publishes no
+out-of-band signature for these artifacts, so the origin itself
+remains the trust root. Post-extract, apt verifies every package
+against the debian-archive-keyring shipped in the bootstrap, so the
+exposure is the bootstrap alone.
 
-- **Void**: `sha256sum.txt` and the ROOTFS tarball both live on
-  `repo-default.voidlinux.org/live/current/`. Upstream also
-  publishes `sha256sum.sig` — an OpenBSD-signify (Ed25519) signature
-  over the checksum file, with per-release pubkeys in the
-  `void-release-keys` package (void-packages GitHub repo). Verifying
-  it would add a genuine second origin — see
-  issues/void-bootstrap-signify-verification.md.
-- **Debian sid**: digest and tarball both come from the
-  debuerreotype GitHub repo. The branch tip is commit-pinned via the
-  GitHub API before either fetch (closes the mutable-branch /
-  force-push race), but Debian publishes no out-of-band signature
-  for these artifacts, so the origin itself remains the trust root.
-  Post-extract, apt verifies every package against the
-  debian-archive-keyring shipped in the bootstrap, so the exposure
-  is the bootstrap alone.
+### Void: signed checksum manifest (minisign, second origin)
+
+Void used to be in the same-origin bucket — `sha256sum.txt` and the
+ROOTFS tarball both live on `repo-default.voidlinux.org/live/current/`,
+so a compromised origin or a mis-issued cert served a matching pair.
+It isn't any more: upstream publishes `sha256sum.sig` next to the
+manifest, and we check it.
+
+Mechanics (`Minisign.kt`, `VoidSha256Resolver.kt`, `VoidReleaseKeys.kt`):
+
+- The format is **minisign**, not OpenBSD signify — the pubkey
+  comments literally read "minisign public key <id>", and the current
+  signature uses minisign's prehashed algorithm `ED` (Ed25519 over
+  BLAKE2b-512 of the file). `Minisign` accepts plain `Ed` too, and
+  verifies the trusted-comment global signature when present. The
+  crypto is BouncyCastle's `Ed25519Signer` + `Blake2bDigest`; we do
+  not shell out and do not depend on a `minisign` binary.
+- Keys are **per image date**: the signature's trusted comment says
+  "This key is only valid for images with date YYYYMMDD", and the
+  matching pubkey is published as
+  `srcpkgs/void-release-keys/files/void-release-<date>.pub` in
+  void-linux/void-packages on **GitHub**. That's the point — the key
+  origin is independent of voidlinux.org, so forging a bootstrap now
+  requires compromising both, roughly the ALARM cross-mirror tier.
+- All keys known at build time are bundled verbatim in
+  `VoidReleaseKeys`, so the common case needs no extra fetch and no
+  runtime trust in GitHub at all. If `live/current/` moves to an image
+  date newer than the APK, we fetch that one key from
+  `raw.githubusercontent.com` rather than bricking installs.
+- **Fails closed** end to end: unfetchable `.sig`, malformed
+  signature, key-id mismatch, bad signature, or an image date with no
+  bundled key *and* no fetchable key all throw out of
+  `resolveBootstrap`, before anything is downloaded.
+- The image date used to pick the key comes from the manifest line we
+  are about to trust, i.e. from unverified bytes. That's fine: it only
+  selects *which* genuine upstream key we verify against, and every
+  key at that URL is a real Void key. An attacker steering the choice
+  still has to produce a signature under a key they don't have.
+- Order of operations matters and is deliberate: parse → resolve key →
+  verify signature over the raw manifest bytes → only then use the
+  parsed filename/digest. The manifest bytes are kept undecoded for
+  hashing so a charset round-trip can't perturb them.
+
+Residual risk: **rollback**. An attacker with origin control can serve
+an older, genuinely-signed Void release (manifest + sig + tarball all
+consistent) instead of the current one. We accept any date with an
+obtainable key, so this passes. It's a much weaker attack than
+arbitrary content — the user gets a real, older Void rootfs, which
+`xbps-install -Suy` then updates — and pinning a floor date would
+break installs whenever a key lands in void-packages before or after
+the image goes live. Not worth the machinery; recorded here so nobody
+mistakes it for an oversight.
+
+The upstream vectors (the real 20250202 `sha256sum.txt` +
+`sha256sum.sig`) are checked into `app/src/test/resources/minisign/`
+and exercised by `MinisignTest`, which also verifies every bundled key
+parses — a typo in `VoidReleaseKeys` fails the unit tests rather than
+an install.
 
 ### Known weaker spot: ALARM bootstrap
 

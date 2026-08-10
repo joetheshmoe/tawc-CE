@@ -14,7 +14,9 @@ import me.phie.tawc.install.distro.DistroBootstrap
  * `void-<arch>-ROOTFS-YYYYMMDD.tar.xz` published under
  * `repo-default.voidlinux.org/live/current/`. There's no stable "latest"
  * symlink, so [resolveBootstrap] looks up the current entry from
- * `sha256sum.txt` at install time — see [VoidSha256Resolver].
+ * `sha256sum.txt` at install time, after verifying that manifest's
+ * minisign signature against a GitHub-published release key — see
+ * [VoidSha256Resolver].
  *
  * Unlike the Arch flavours (which diverge in mirrorlists, IgnorePkg sets,
  * and kernel-package cruft), the two Void flavours differ only in
@@ -37,7 +39,7 @@ internal sealed class VoidLinux(
 
     final override fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy?): DistroBootstrap {
         log("void: resolving latest $linuxArch ROOTFS via sha256sum.txt")
-        val r = VoidSha256Resolver.resolveLatest(linuxArch, mirrorProxy)
+        val r = VoidSha256Resolver.resolveLatest(linuxArch, mirrorProxy, log)
         log("void: latest=${r.filename} sha256=${r.sha256Hex}")
         return DistroBootstrap(
             url = r.downloadUrl,
