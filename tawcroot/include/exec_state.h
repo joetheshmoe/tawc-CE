@@ -81,8 +81,15 @@ extern "C" {
  * sibling.
  * Version 6: adds per-bind read-only flags (bind_ro[]) and the
  * root-view RO bit (root_ro, set when the guest chrooted into an RO
- * bind dst) so RO enforcement survives a guest execve. */
-#define TAWCROOT_EXEC_STATE_VERSION 6
+ * bind dst) so RO enforcement survives a guest execve.
+ * Version 7: adds the proctitle string (proctitle_off) — the space-
+ * joined guest cmdline (plus slack for shebang expansion) that commit()
+ * passes as argv[0] of the execveat-into-self, sizing the new process's
+ * kernel arg region so the loader can later overwrite it in place with
+ * the real NUL-joined argv (see proctitle.h). Without it every guest
+ * process's /proc/<pid>/cmdline reads "tawcroot --exec-child <fd>" and
+ * pgrep/pkill/ps can't identify anything by name. */
+#define TAWCROOT_EXEC_STATE_VERSION 7
 /* MAX_ARGS at 4096: shell glob expansions, linker invocations, and
  * pacman hooks routinely pass hundreds-to-thousands of args; the kernel
  * allows ~2 MB of argv strings. MAX_ENV at 1024 covers the busiest bash
@@ -127,6 +134,8 @@ typedef struct {
 	 * (restore keeps the register-time root defaults). */
 	uint32_t      has_identity;
 	tawc_identity identity;
+	/* v7: commit()'s execveat argv[0] (see version note). 0 = absent. */
+	uint32_t proctitle_off;
 } tawcroot_exec_state_header;
 
 /* Total memfd bytes when both header + strings are written. */
@@ -178,6 +187,7 @@ typedef struct {
 	const char *const *shm_name;        /* size n_shm */
 	const int         *shm_fd;          /* size n_shm */
 	const tawc_identity *identity;      /* may be NULL */
+	const char        *proctitle;       /* may be NULL */
 } tawcroot_exec_state_extras;
 
 /* ---- Writer (handler side) ----

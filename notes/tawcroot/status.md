@@ -362,6 +362,17 @@ covered by unit/hosted/smoke tests.)
   wholesale, so this leaks nothing the kernel doesn't. Includes
   `/proc/<pid>/root` of an emulated-chroot'd guest, which an outside
   observer sees as "/" where a real kernel would show the chroot dir.
+  Cross-process `comm`/`cmdline` ARE kernel-truthful since the
+  proctitle work (proctitle.h: PR_SET_NAME + in-place arg-region
+  rewrite at the loader jump, region pre-sized via exec_state's
+  proctitle as the execveat argv[0]) — that's what makes
+  pgrep/pkill/ps identify guest processes. `/proc/<pid>/exe` remains
+  libtawcroot.so cross-process: PR_SET_MM_EXE_FILE needs
+  CAP_SYS_RESOURCE, and /proc/self/exe must keep naming our binary —
+  the exec handler re-execs through it (own-process reads are
+  synthesized to the guest path). `pgrep -x`/`pgrep`/`pkill` match on
+  comm/cmdline, not exe, so only tools that readlink exe cross-process
+  see the host path.
 - **`security.capability` xattrs cannot be written.** SELinux denies
   `untrusted_app` CAP_SETFCAP, so setting that xattr returns EPERM;
   during pacman installs libarchive degrades it to a per-file warning
@@ -418,8 +429,11 @@ backed by a very large profiled win.
   decisions. Roughly 500–1000 LOC in a self-contained `src/uring.c`.
 - **More `/proc` shadows.** Extend the existing memfd-shadow pattern
   (proc_shadow.c) only when a workload needs it. Likely candidates:
-  `/proc/<pid>/cmdline`, `/proc/<pid>/auxv`,
-  `/proc/<pid>/task/<tid>/maps`.
+  `/proc/<pid>/auxv`, `/proc/<pid>/task/<tid>/maps`.
+  (`/proc/<pid>/cmdline` no longer needs a shadow — the kernel value
+  is real since the proctitle work; `/proc/stat` is shadowed with a
+  synthesized btime + idle-only cpu line because SELinux denies
+  untrusted_app the real file and procps `ps` hard-requires `btime`.)
 - **Path-component negative cache** (perf; profile first). Cache
   recent "not a symlink" prefix components so the resolver skips
   repeated `readlinkat` calls. Bounded table, invalidated on root-view

@@ -13,22 +13,29 @@
 #include "linkstore.h"
 #include "loader_elf.h"
 #include "loader_exec.h"
+#include "loader_map.h"
 #include "path.h"
 #include "raw_sys.h"
 #include "shm.h"
 #include "tawc_uapi.h"
 
 
+/* Proctitle staging buffer: path (16 KB) + space-joined argv (64 KB) +
+ * shebang-expansion slack. Matches proctitle.c's bounce sizing. */
+#define EXEC_TITLE_BUF_SIZE  ((16 + 64 + 4) * 1024)
+
 /* Cap on serialized exec_state size we'll write into a memfd. Sized to
  * hold the full header (offset arrays for MAX_ARGS args + MAX_ENV envs)
  * plus everything the collection layer (syscalls_exec.c) accepts: 16 KB
- * path + 64 KB argv + 256 KB envp, with slack. Previously this was 64 KB
+ * path + 64 KB argv + 256 KB envp, with slack, plus the proctitle
+ * string. Previously this was 64 KB
  * total, so any argv+envp over ~61 KB made the write -ENOSPC, which the
  * guest saw as a nonsensical execve()==ENOSPC for exactly the busy
  * environments the collection layer was sized for. BSS, not stack. */
 #define EXEC_STATE_BUF_SIZE                                            \
 	(sizeof(tawcroot_exec_state_header) +                         \
-	 (16 * 1024) + (64 * 1024) + (256 * 1024) + 8192)
+	 (16 * 1024) + (64 * 1024) + (256 * 1024) +                    \
+	 EXEC_TITLE_BUF_SIZE + 8192)
 
 /* Validate an exec-probe fd the way execve(2) would validate the file:
  * directories are EISDIR, non-regular files and files with no execute
@@ -85,8 +92,12 @@ static long classify_elf(int fd)
  * Note: a narrow TOCTOU window remains (the file could be replaced
  * between this probe and the child's open), same as for the existing
  * executable-bit probe — but that window is far narrower than the
- * always-dies-post-commit behaviour it replaces. */
-static long classify_loadable(int fd, int depth)
+ * always-dies-post-commit behaviour it replaces.
+ *
+ * `title_extra` accumulates the bytes the loader's shebang resolution
+ * will PREPEND to argv (interpreter path + optional shebang arg, per
+ * level), so the proctitle can reserve arg-region space for them. */
+static long classify_loadable(int fd, int depth, size_t *title_extra)
 {
 	if (depth > TAWC_SHEBANG_MAX_DEPTH) return TAWC_ELOOP;
 
@@ -100,13 +111,16 @@ static long classify_loadable(int fd, int depth)
 	 * require it executable, and recurse. */
 	char line[TAWC_SHEBANG_BUF];
 	const char *interp;
-	long pe = tawcroot_shebang_read(fd, line, sizeof line, &interp, 0);
+	const char *sarg;
+	long pe = tawcroot_shebang_read(fd, line, sizeof line, &interp, &sarg);
 	if (pe < 0) return pe;
+	*title_extra += tawc_strlen(interp) + 1;
+	if (sarg) *title_extra += tawc_strlen(sarg) + 1;
 
 	long ifd = tawcroot_open_in_view(interp);
 	if (ifd < 0) return ifd;  /* missing interpreter → ENOENT, etc. */
 	long ck = probe_check_executable((int)ifd);
-	if (ck == 0) ck = classify_loadable((int)ifd, depth + 1);
+	if (ck == 0) ck = classify_loadable((int)ifd, depth + 1, title_extra);
 	tawc_close((int)ifd);
 	return ck;
 }
@@ -123,6 +137,7 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 	 * the probe through the translator so we open inside the view.
 	 * In legacy --exec-via-handler mode (no rootfs) the path is a
 	 * host-fs path, opened directly. */
+	size_t title_extra = 0;
 	{
 		long probe = tawcroot_open_in_view(path);
 		if (probe < 0) return probe;
@@ -131,7 +146,7 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 		 * so a non-ELF non-script, a missing shebang interpreter, or a
 		 * wrong-arch ELF returns a clean errno to the guest instead of
 		 * killing it with a loader exit code post-execveat. */
-		if (ck == 0) ck = classify_loadable((int)probe, 0);
+		if (ck == 0) ck = classify_loadable((int)probe, 0, &title_extra);
 		tawc_close((int)probe);
 		if (ck < 0) return ck;
 	}
@@ -244,6 +259,31 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 		extras.shm_fd   = shm_fd_arr;
 	}
 
+	/* Proctitle: the space-joined cmdline the loader will install
+	 * (path + argv[1..] — the loader's eff_argv[0] is the exec path),
+	 * padded with spaces for shebang expansion. commit() passes it as
+	 * argv[0] of the execveat so the new process's kernel arg region
+	 * is big enough for proctitle.c's in-place rewrite. Static: the
+	 * caller holds exec_lock (thread-safety note in exec_handler.h). */
+	static char title_buf[EXEC_TITLE_BUF_SIZE];
+	{
+		size_t pos = 0;
+		(void)tawc_str_append(title_buf, sizeof title_buf, &pos, path);
+		for (int i = 1; i < argc && argv[i]; i++) {
+			if (tawc_str_append(title_buf, sizeof title_buf,
+			                    &pos, " ") ||
+			    tawc_str_append(title_buf, sizeof title_buf,
+			                    &pos, argv[i]))
+				break;
+		}
+		while (title_extra > 0 && pos + 1 < sizeof title_buf) {
+			title_buf[pos++] = ' ';
+			title_extra--;
+		}
+		title_buf[pos] = 0;
+		extras.proctitle = title_buf;
+	}
+
 	static uint8_t state_buf[EXEC_STATE_BUF_SIZE];
 	long w = tawcroot_exec_state_write(state_buf, sizeof state_buf,
 	                                   path, argc, argv, envp, &extras);
@@ -284,7 +324,17 @@ long tawcroot_exec_handler_commit(int mfd)
 		return TAWC_ENOEXEC;
 	}
 
-	/* (5) Build the new argv: ["tawcroot", "--exec-child", "<fdstr>"]. */
+	/* (5) Build the new argv: ["<proctitle>", "--exec-child", "<fdstr>"].
+	 *
+	 * argv[0] is the serialized proctitle (space-joined guest cmdline
+	 * plus shebang slack) so the kernel builds the new process's arg
+	 * region big enough for the loader's in-place cmdline rewrite —
+	 * without it, every guest process's /proc/<pid>/cmdline is stuck
+	 * at "tawcroot --exec-child <fd>" (see proctitle.h). Entry
+	 * classification only looks at argv[1] and argv[2], so argv[0] is
+	 * free payload. The pointer targets the mmap'd state (NOT a shared
+	 * static — commit runs without exec_lock; see header note); the
+	 * kernel copies argv strings before the old mm goes away. */
 	char fdstr[24];
 	if (tawc_int_to_str(fdstr, sizeof fdstr, (int)mfd) <= 0) {
 		tawc_close((int)exe_fd);
@@ -292,11 +342,38 @@ long tawcroot_exec_handler_commit(int mfd)
 		return TAWC_EFAULT;
 	}
 
-	char arg0[] = "tawcroot";
-	char arg1[] = "--exec-child";
+	char arg0_fallback[] = "tawcroot";
+	const char *arg0 = arg0_fallback;
+	long map_rv = -1;
+	size_t map_len = 0;
+	long sz = tawc_lseek((int)mfd, 0, 2 /*SEEK_END*/);
+	if (sz >= (long)sizeof(tawcroot_exec_state_header)) {
+		long mrv = tawc_mmap((void *)0, (size_t)sz, TAWC_MM_PROT_READ,
+		                     TAWC_MM_MAP_PRIVATE, (int)mfd, 0);
+		if (!tawc_loader_mmap_is_err((uintptr_t)mrv)) {
+			map_rv = mrv;
+			map_len = (size_t)sz;
+			const tawcroot_exec_state_header *h =
+				(const tawcroot_exec_state_header *)(uintptr_t)mrv;
+			const char *strings =
+				(const char *)(uintptr_t)mrv + sizeof *h;
+			if (h->magic == TAWCROOT_EXEC_STATE_MAGIC &&
+			    h->version == TAWCROOT_EXEC_STATE_VERSION &&
+			    h->proctitle_off != 0 &&
+			    h->proctitle_off < h->string_bytes &&
+			    sizeof *h + (size_t)h->string_bytes <= (size_t)sz) {
+				const char *p = strings + h->proctitle_off;
+				const char *end = strings + h->string_bytes;
+				const char *q = p;
+				while (q < end && *q) q++;
+				if (q < end) arg0 = p;
+			}
+		}
+	}
+
 	char *new_argv[4];
-	new_argv[0] = arg0;
-	new_argv[1] = arg1;
+	new_argv[0] = (char *)arg0;
+	new_argv[1] = (char *)"--exec-child";
 	new_argv[2] = fdstr;
 	new_argv[3] = (char *)0;
 
@@ -313,6 +390,8 @@ long tawcroot_exec_handler_commit(int mfd)
 	long er = tawc_execveat((int)exe_fd, "", new_argv, envp_for_self,
 	                        AT_EMPTY_PATH);
 	/* On success execveat does not return. On failure er is -errno. */
+	if (map_rv >= 0)
+		(void)tawc_munmap((void *)(uintptr_t)map_rv, map_len);
 	tawc_close((int)exe_fd);
 	tawc_close((int)mfd);
 	return er;

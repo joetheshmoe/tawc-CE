@@ -158,6 +158,7 @@ PROD_C := \
     $(SRC_T)/src/loader_stack.c \
     $(SRC_T)/src/loader_io_prod.c \
     $(SRC_T)/src/loader_exec.c \
+    $(SRC_T)/src/proctitle.c \
     $(SRC_T)/src/exec_state.c \
     $(SRC_T)/src/exec_handler.c \
     $(SRC_T)/src/syscalls_exec.c \

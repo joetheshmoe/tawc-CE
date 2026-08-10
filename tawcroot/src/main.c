@@ -44,6 +44,7 @@
 #include "linkstore.h"
 #include "loader_exec.h"
 #include "path.h"
+#include "proctitle.h"
 #include "raw_sys.h"
 #include "supervisor.h"
 
@@ -481,6 +482,10 @@ __attribute__((noreturn)) static void prod_main(int argc, char **argv)
 
 void tawcroot_main(int argc, char **argv)
 {
+	/* Record the kernel arg region before anything else touches argv;
+	 * the loader rewrites it into the guest's cmdline at jump time. */
+	tawcroot_proctitle_stash(argc, argv);
+
 	enum tawcroot_entry entry = classify_entry(argc, argv);
 
 	/* Top-level binding (PDEATHSIG + orphan-detect) is unsafe on the

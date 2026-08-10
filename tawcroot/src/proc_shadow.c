@@ -306,6 +306,17 @@ static int is_proc_bus_pci_devices(const char *path)
 	return tawc_streq(path, "/proc/bus/pci/devices");
 }
 
+/* /proc/stat: Android's SELinux denies untrusted_app the read, so
+ * procps `ps` dies with "Unable to get system boot time" (it needs the
+ * `btime` line). Synthesize the minimum procps needs: btime derived
+ * from CLOCK_REALTIME − CLOCK_BOOTTIME, an aggregate cpu line (all
+ * ticks idle — we can't see the real accounting either), and the
+ * fixed-shape counters tools expect to exist. */
+static int is_proc_stat(const char *path)
+{
+	return tawc_streq(path, "/proc/stat");
+}
+
 /* /proc/self/maps shadow fd. Read the kernel's maps file in full,
  * reverse-translate each path field via the rootfs/bind tables, and
  * write the result into a memfd that we hand back to the guest.
@@ -476,6 +487,33 @@ static long open_proc_bus_pci_devices_shadow(void)
 				 1U /*MFD_CLOEXEC*/);
 }
 
+static long open_proc_stat_shadow(void)
+{
+	struct { long sec; long nsec; } rt = { 0, 0 }, bt = { 0, 0 };
+	(void)TAWC_RAW(TAWC_SYS_clock_gettime, 0 /*CLOCK_REALTIME*/,
+	               (long)&rt, 0, 0, 0, 0);
+	(void)TAWC_RAW(TAWC_SYS_clock_gettime, 7 /*CLOCK_BOOTTIME*/,
+	               (long)&bt, 0, 0, 0, 0);
+	long btime = rt.sec - bt.sec;
+	if (btime < 1) btime = 1;
+	/* USER_HZ is 100 on both supported arches. */
+	long idle_ticks = bt.sec * 100;
+
+	char buf[256];
+	size_t pos = 0;
+	long e = 0;
+	if (!e) e = tawc_str_append(buf, sizeof buf, &pos, "cpu  0 0 0 ");
+	if (!e) e = tawc_str_append_dec(buf, sizeof buf, &pos, idle_ticks);
+	if (!e) e = tawc_str_append(buf, sizeof buf, &pos,
+	                            " 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime ");
+	if (!e) e = tawc_str_append_dec(buf, sizeof buf, &pos, btime);
+	if (!e) e = tawc_str_append(buf, sizeof buf, &pos,
+	                            "\nprocesses 1\nprocs_running 1\n"
+	                            "procs_blocked 0\n");
+	if (e) return TAWC_EFAULT;
+	return memfd_from_bytes("tawcroot-stat", buf, pos);
+}
+
 /* Classify `path` against the three /proc shadows and synthesize the
  * matching fd. Returns 1 on a hit (with *out set to the new fd or the
  * synthesizer's -errno) and 0 on no match. Centralising the dispatch
@@ -496,6 +534,10 @@ int tawcroot_proc_shadow_open(const char *path, long *out)
 	}
 	if (is_proc_bus_pci_devices(path)) {
 		*out = open_proc_bus_pci_devices_shadow();
+		return 1;
+	}
+	if (is_proc_stat(path)) {
+		*out = open_proc_stat_shadow();
 		return 1;
 	}
 	return 0;

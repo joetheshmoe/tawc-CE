@@ -397,14 +397,19 @@ fn test_ando_disable_kills_in_flight_child() {
     let (rc, _, err) =
         run("setsid ando sleep 991 </dev/null >/dev/null 2>&1 & sleep 1; echo launched");
     assert_eq!(rc, 0, "stderr: {err}");
-    wait_for_proc("[s]leep 991", true, 5);
+    // Anchor ARGS to start with "sleep": since tawcroot's proctitle work
+    // the guest-side `ando sleep 991` CLIENT also shows its real cmdline
+    // in Android's same-uid ps, and a bare "[s]leep 991" matches both.
+    // "<digit> " pins the match to the end of the PID column.
+    let sleep_pat = "[0-9] [s]leep 991$";
+    wait_for_proc(sleep_pat, true, 5);
 
     // Confirm it genuinely survived session teardown — if the client had
     // died with the session, disconnect-kill (not disable) would have
     // already reaped the sleep, making a later "gone" a false pass.
     std::thread::sleep(std::time::Duration::from_secs(2));
     assert_eq!(
-        android_proc_count("[s]leep 991"),
+        android_proc_count(sleep_pat),
         1,
         "ando child died with the session, before the disable under test"
     );
@@ -412,7 +417,7 @@ fn test_ando_disable_kills_in_flight_child() {
     // Disable: stop_listener SIGKILLs the in-flight child's pgid even
     // though the (detached) client is still connected.
     disable_ando();
-    wait_for_proc("[s]leep 991", false, 5);
+    wait_for_proc(sleep_pat, false, 5);
 }
 
 #[test]

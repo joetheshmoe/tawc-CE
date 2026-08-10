@@ -120,7 +120,14 @@ rule is a short-lived `exec_state_fd`, created by the `execve`
 handler immediately before re-execing tawcroot. It is passed as the
 positional argv slot after `--exec-child` (i.e. `argv[2]`,
 formatted as a decimal integer), intentionally *without*
-`FD_CLOEXEC` for that one host exec. `--exec-child` reads it through
+`FD_CLOEXEC` for that one host exec. `argv[0]` of that re-exec is
+not "tawcroot" but the serialized proctitle (space-joined guest
+cmdline plus shebang slack): it sizes the kernel arg region so the
+loader can overwrite it in place with the real NUL-joined guest argv
+right before the jump, making `/proc/<pid>/cmdline` (and, via
+`PR_SET_NAME`, `comm`) kernel-truthful for every guest process — see
+`include/proctitle.h`. Entry classification only reads
+`argv[1]`/`argv[2]`. `--exec-child` reads it through
 `tawcroot_raw_syscall()`, reconstructs process state, then closes it
 before manually jumping to guest code. The fd is never visible to the
 guest.

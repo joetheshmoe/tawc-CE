@@ -58,6 +58,7 @@ size_t tawcroot_exec_state_estimate_bytes(const char *path,
 			if (ex->shm_name && ex->shm_name[i])
 				s += strlen(ex->shm_name[i]) + 1;
 		}
+		if (ex->proctitle) s += strlen(ex->proctitle) + 1;
 	}
 	return tawcroot_exec_state_total_bytes((uint32_t)s);
 }
@@ -151,6 +152,9 @@ long tawcroot_exec_state_write(void *buf, size_t buf_cap,
 			h->has_identity = 1;
 			h->identity     = *ex->identity;
 		}
+		if (ex->proctitle)
+			h->proctitle_off = emit_str(strings, &off,
+			                            ex->proctitle);
 	}
 
 	h->string_bytes = off;
@@ -214,6 +218,7 @@ long tawcroot_exec_state_read(const void *buf, size_t buf_size,
 	for (uint32_t i = 0; i < h->n_shm; i++) {
 		CHECK_REQUIRED(h->shm_name_off[i]);
 	}
+	CHECK_OPTIONAL(h->proctitle_off);
 	#undef CHECK_REQUIRED
 	#undef CHECK_OPTIONAL
 

@@ -15,6 +15,7 @@
 #include "loader_elf.h"
 #include "loader_exec.h"
 #include "loader_jump.h"
+#include "proctitle.h"
 #include "loader_map.h"
 #include "loader_stack.h"
 #include "path.h"
@@ -413,7 +414,11 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 	if (tawc_loader_build_stack(stack, STACK_SZ, &in, &so) != 0)
 		LOADER_FAIL(72);
 
-	/* --- 5. Jump. --- */
+	/* --- 5. Kernel-visible identity (comm + cmdline), then jump. ---
+	 * After build_stack: the rewrite clobbers the initial-stack argv
+	 * region, which is where eff_argv/guest_path point on the
+	 * top-level prod entry. */
+	tawcroot_proctitle_apply(args->guest_path, eff_argc, eff_argv);
 	tawc_loader_jump(so.sp, entry);
 }
 

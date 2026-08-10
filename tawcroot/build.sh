@@ -195,6 +195,7 @@ SRC_C_PROD=(
     "$TAWCROOT_DIR/src/loader_stack.c"
     "$TAWCROOT_DIR/src/loader_io_prod.c"
     "$TAWCROOT_DIR/src/loader_exec.c"
+    "$TAWCROOT_DIR/src/proctitle.c"
     "$TAWCROOT_DIR/src/exec_state.c"
     "$TAWCROOT_DIR/src/exec_handler.c"
     "$TAWCROOT_DIR/src/syscalls_exec.c"

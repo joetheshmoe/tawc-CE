@@ -180,6 +180,44 @@ test(exec_via_handler_wrong_arch_elf_returns_50)
 	(void)unlink(path);
 }
 
+test(exec_via_handler_sets_comm_and_cmdline)
+{
+	/* Kernel-visible identity must match the guest after the dance:
+	 * comm = basename of the exec path (PR_SET_NAME at the loader
+	 * jump), cmdline = the guest argv NUL-joined (in-place arg-region
+	 * rewrite; trailing NUL slack from the re-exec protocol overhead
+	 * is allowed, hence the prefix match). Pre-fix both read as the
+	 * re-exec protocol ("tawcroot --exec-child <fd>" / comm "<fd>"),
+	 * so pgrep/pkill/ps couldn't identify any guest process. */
+	const char *script =
+		"[ \"$(cat /proc/$$/comm)\" = sh ] || exit 7; "
+		"case \"$(tr '\\0' ' ' < /proc/$$/cmdline)\" in "
+		"'/bin/sh -c '*) exit 42;; *) exit 8;; esac";
+	const char *args[] = { "--exec-via-handler", "/bin/sh", "-c",
+	                       script, NULL };
+	test_int_eq(run(args), 42);
+}
+
+test(exec_via_handler_shebang_cmdline_has_interpreter)
+{
+	/* Shebang fidelity: like the kernel's binfmt_script, cmdline shows
+	 * [interp, script-path, ...] and comm is the SCRIPT's basename
+	 * (truncated to 15 chars, TASK_COMM_LEN), not the interpreter's.
+	 * The exec handler reserves arg-region space for the interpreter
+	 * prepend via classify_loadable's title_extra. */
+	const char *p = make_exec_file("title",
+		"#!/bin/sh\n"
+		"[ \"$(cat /proc/$$/comm)\" = tawcroot-classi ] || exit 7\n"
+		"case \"$(tr '\\0' ' ' < /proc/$$/cmdline)\" in\n"
+		"\"/bin/sh \"*\"tawcroot-classify-title\"*) exit 42;;\n"
+		"*) exit 8;;\n"
+		"esac\n");
+	test_true(p != NULL);
+	const char *args[] = { "--exec-via-handler", p, NULL };
+	test_int_eq(run(args), 42);
+	(void)unlink(p);
+}
+
 test(exec_via_handler_shebang_missing_interp_returns_50)
 {
 	/* A script whose interpreter doesn't exist: real execve returns
