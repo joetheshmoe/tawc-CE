@@ -28,13 +28,9 @@ reporting rules.
 5. Watch stability ~2 minutes of input; then quit via the in-game menu
    (Esc → Quit) rather than killing it, to test clean SDL teardown.
 6. If launch fails before a window appears, check against
-   `issues/usecase_tests/sdl-games-blocked-cold-start-output-and-egl-config.md`
-   before filing anything new. Two known blockers live there: SDL sees
-   no display at all unless some window is already open (the compositor
-   advertises `wl_output` only once an Activity surface exists), and
-   `SDL_CreateWindow(SDL_WINDOW_OPENGL)` fails EGL config selection.
-   Open an unrelated window first (e.g. `xterm`) to get past the first
-   one.
+   `issues/usecase_tests/sdl-createwindow-opengl-eglchooseconfig-bad-attribute.md`
+   before filing anything new: `SDL_CreateWindow(SDL_WINDOW_OPENGL)`
+   fails EGL config selection, for any SDL GL window.
 
 ## Expected results
 
@@ -46,8 +42,8 @@ reporting rules.
 
 ## Known issues / caveats
 
-- `issues/usecase_tests/sdl-games-blocked-cold-start-output-and-egl-config.md`
-  — the two remaining blockers for this test.
+- `issues/usecase_tests/sdl-createwindow-opengl-eglchooseconfig-bad-attribute.md`
+  — the remaining blocker for this test.
 - No audio bridge exists (plans/audio.md); silence is expected.
 - `issues/hardware-backspace-stuck-down.md` if you use Backspace in
   menus.
@@ -110,18 +106,19 @@ divergences"), after which `SDL_Init(SDL_INIT_EVERYTHING)` returns 0
 with 1 display and doomretro gets past init entirely. Two further
 blockers were uncovered underneath and now own this test:
 
-1. SDL sees zero displays unless a window is already open — the
-   compositor advertises `wl_output` only once an Activity surface
-   registers. This turned out to be the original
+1. SDL saw zero displays unless a window was already open — the
+   compositor advertised `wl_output` only once an Activity surface
+   registered. This turned out to be the original
    `supertuxkart-sdl-no-displays` bug, and explains why it looked
    intermittent (focused runs = cold compositor; full suite = warm).
-2. With that worked around, `SDL_CreateWindow(SDL_WINDOW_OPENGL)` fails
-   `eglChooseConfig` with `EGL_BAD_ATTRIBUTE`, for any SDL GL window.
-   SDL's non-GL SHM path is fine.
+   **Fixed 2026-08-10**: the output global now exists from compositor
+   start (notes/multi-activity.md, `tests/integration/tests/cold_start.rs`).
+2. `SDL_CreateWindow(SDL_WINDOW_OPENGL)` fails `eglChooseConfig` with
+   `EGL_BAD_ATTRIBUTE`, for any SDL GL window. SDL's non-GL SHM path is
+   fine. Still open, in
+   `issues/usecase_tests/sdl-createwindow-opengl-eglchooseconfig-bad-attribute.md`.
 
-Both in
-`issues/usecase_tests/sdl-games-blocked-cold-start-output-and-egl-config.md`.
-Re-run this plan once they land. Not added to Completed.
+Re-run this plan once blocker 2 lands. Not added to Completed.
 
 Cleanup done: doomretro + SDL deps removed, `/root/usecase-doom` and
 `/tmp/*.log` deleted, screenshots deleted device-side and host-side.

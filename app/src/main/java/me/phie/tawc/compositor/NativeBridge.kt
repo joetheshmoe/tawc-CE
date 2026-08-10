@@ -116,9 +116,14 @@ object NativeBridge {
     // --- Compositor lifecycle: called from CompositorService ---
 
     /** Start the Rust compositor thread. Idempotent — second call is a no-op.
-     *  The first real output size comes from [nativeRegisterActivitySurface]. */
+     *  `displayWidthPx`/`displayHeightPx` are the Android panel metrics; they
+     *  seed a provisional `wl_output` mode so clients that connect before any
+     *  Activity exists still see a display. The first real output size comes
+     *  from [nativeRegisterActivitySurface]. */
     external fun nativeStartCompositor(
         outputScale: Float,
+        displayWidthPx: Int,
+        displayHeightPx: Int,
         xwayland: Boolean,
         gtk3BrokenMenusWorkaround: Boolean,
     )

@@ -146,11 +146,18 @@ fn cache_jni_globals(env: &mut JNIEnv) {
 /// The compositor sets up its EGL context, GlesRenderer, Wayland display,
 /// and listening socket up front, then enters its event loop with no
 /// `OutputHost`s. `nativeRegisterActivitySurface` adds hosts later.
+///
+/// `display_width_px`/`display_height_px` are the Android panel metrics.
+/// They seed the advertised output mode so clients that connect before any
+/// Activity exists still see a display; the first host registration
+/// replaces them with the real Activity surface size.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartCompositor(
     mut env: JNIEnv,
     _class: JClass,
     output_scale: f32,
+    display_width_px: jint,
+    display_height_px: jint,
     xwayland: jboolean,
     gtk3_broken_menus_workaround: jboolean,
 ) {
@@ -206,6 +213,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
     *STATE_QUERY_SENDER.lock().unwrap() = Some(state_query_sender);
 
     let initial_scale = sanitize_output_scale(output_scale as f64).unwrap_or(DEFAULT_OUTPUT_SCALE);
+    let initial_physical_size = (display_width_px, display_height_px);
     let initial_xwayland = xwayland != 0;
     let initial_gtk3_broken_menus_workaround = gtk3_broken_menus_workaround != 0;
     std::thread::spawn(move || {
@@ -216,6 +224,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
             surface_event_channel,
             state_query_channel,
             initial_scale,
+            initial_physical_size,
             initial_xwayland,
             initial_gtk3_broken_menus_workaround,
         ) {
@@ -969,6 +978,7 @@ fn run_compositor(
     surface_event_channel: smithay::reexports::calloop::channel::Channel<SurfaceEvent>,
     state_query_channel: smithay::reexports::calloop::channel::Channel<StateQueryResponse>,
     initial_scale: f64,
+    initial_physical_size: (i32, i32),
     initial_xwayland: bool,
     initial_gtk3_broken_menus_workaround: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1001,13 +1011,14 @@ fn run_compositor(
     };
 
     // --- Wayland display + protocol state ---
-    // Output geometry is unknown until the assigned Android Activity
-    // registers its SurfaceView. Toplevel configures are deferred until
-    // that real size arrives, avoiding both configure(0,0) and
-    // service-side display-size guesses.
+    // The output is advertised from the start with the Android panel
+    // metrics as a provisional mode. Real per-window geometry is still
+    // unknown until the assigned Activity registers its SurfaceView, so
+    // toplevel configures stay deferred until that size arrives — that
+    // deferral, not a missing output, is what avoids configure(0,0) and
+    // service-side window-size guesses.
     let mut wl_display: Display<TawcState> = Display::new()?;
     let scale = OutputScale::new(initial_scale);
-    // --- Output (global advertised when first Activity surface arrives) ---
     let output = smithay::output::Output::new(
         "tawc-0".to_string(),
         smithay::output::PhysicalProperties {
@@ -1022,8 +1033,7 @@ fn run_compositor(
     let state = TawcState::new(
         &mut wl_display,
         scale,
-        (0, 0),
-        (0, 0),
+        initial_physical_size,
         initial_xwayland,
         initial_gtk3_broken_menus_workaround,
         render_state,

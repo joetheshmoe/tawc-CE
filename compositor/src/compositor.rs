@@ -148,12 +148,14 @@ pub struct TawcState {
     /// of truth — lib.rs sets this at startup and render.rs reads it back.
     pub output_scale: OutputScale,
 
-    /// Logical size of the host currently backing the single advertised output.
-    /// Per-host configure sizing comes from each `OutputHost.logical_size`.
+    /// Logical size of the advertised output. Derived from
+    /// `output_physical_size` and the scale by `set_output_mode`; per-host
+    /// configure sizing comes from each `OutputHost.logical_size`.
     pub output_logical_size: (i32, i32),
 
-    /// Physical size behind the single advertised output. This follows the
-    /// foreground host after startup, not arbitrary background host resizes.
+    /// Physical size behind the single advertised output. Starts at the
+    /// Android display metrics passed to `nativeStartCompositor` and then
+    /// follows the foreground host, not arbitrary background host resizes.
     pub output_physical_size: (i32, i32),
 
     /// Per-Activity render targets. One entry per Android `CompositorActivity`
@@ -237,14 +239,12 @@ pub struct TawcState {
     pub xdisplay: Option<u32>,
 
     pub render: crate::render::RenderState,
-    /// The single output object tracked today. Its `wl_output` global is
-    /// advertised only after the first real Activity surface size arrives;
-    /// multi-output support is left to a later phase (see
-    /// `notes/multi-activity.md`).
+    /// The single output object tracked today. Its `wl_output` global exists
+    /// with a nonzero mode for the whole life of the compositor; multi-output
+    /// support is left to a later phase (see `notes/multi-activity.md`).
     pub output: smithay::output::Output,
-    pub output_advertised: bool,
     /// Host whose dimensions currently back the single advertised output.
-    /// None until the first visible/bootstrap host registers.
+    /// None while the mode is still the provisional startup metrics.
     pub advertised_output_host: Option<ActivityId>,
     pub start_time: std::time::Instant,
     pub frame_count: u64,
@@ -260,7 +260,6 @@ impl TawcState {
     pub fn new(
         display: &mut Display<Self>,
         output_scale: OutputScale,
-        output_logical_size: (i32, i32),
         output_physical_size: (i32, i32),
         xwayland_enabled: bool,
         gtk3_broken_menus_workaround_enabled: bool,
@@ -332,7 +331,7 @@ impl TawcState {
 
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
 
-        Self {
+        let mut state = Self {
             display_handle: dh,
             loop_handle: None,
             compositor_state,
@@ -352,8 +351,8 @@ impl TawcState {
                 gtk3_broken_menus_workaround_enabled,
             ),
             output_scale,
-            output_logical_size,
-            output_physical_size,
+            output_logical_size: (0, 0),
+            output_physical_size: (0, 0),
             text_input_state: TextInputState::new(),
             clipboard_pull: None,
             last_announced_android_clip_ts: None,
@@ -382,12 +381,53 @@ impl TawcState {
             xdisplay: None,
             render,
             output,
-            output_advertised: false,
             advertised_output_host: None,
             start_time: std::time::Instant::now(),
             frame_count: 0,
             needs_render: true,
             last_rendered_toplevels: 0,
+        };
+
+        // The output global lives for the whole life of the compositor. A
+        // registry with no wl_output is a state very little client code
+        // handles (SDL's video init fails outright, Xwayland has no screen
+        // geometry), so clients get a display from the moment they connect.
+        // The mode here is provisional — the Android panel size, not the
+        // eventual Activity surface — and the first host registration
+        // corrects it. Toplevels are still never configured from it; that
+        // waits for a real host size (`configure_toplevel_for_host`).
+        state.set_output_mode(output_physical_size);
+        state.output.create_global::<Self>(&state.display_handle);
+
+        state
+    }
+
+    /// Sole owner of the advertised output's mode. Takes physical pixels,
+    /// derives the logical size from the current scale, and pushes both to
+    /// the `wl_output`.
+    pub fn set_output_mode(&mut self, physical_px: (i32, i32)) {
+        let (mut w, mut h) = physical_px;
+        if w <= 0 || h <= 0 {
+            error!("Invalid output size {}x{}, clamping to 1x1", w, h);
+            (w, h) = (1, 1);
+        }
+        self.output_physical_size = (w, h);
+        self.output_logical_size = self.output_scale.logical_size(w, h);
+        let previous = self.output.current_mode();
+        let mode = smithay::output::Mode { size: (w, h).into(), refresh: 60_000 };
+        self.output.change_current_state(
+            Some(mode),
+            Some(smithay::utils::Transform::Normal),
+            Some(self.output_scale.smithay_scale()),
+            Some((0, 0).into()),
+        );
+        self.output.set_preferred(mode);
+        // Keep exactly one mode. `change_current_state` only appends, so
+        // without this the provisional startup mode (and every size a
+        // rotation or split-screen resize passed through) would linger in
+        // the list forever and be offered to clients that enumerate modes.
+        if let Some(previous) = previous.filter(|previous| *previous != mode) {
+            self.output.delete_mode(previous);
         }
     }
 
@@ -519,16 +559,7 @@ impl TawcState {
             return;
         };
         let size = host.physical_size;
-        self.output_physical_size = (size.w, size.h);
-        self.output_logical_size = host.logical_size;
-        let mode = smithay::output::Mode { size, refresh: 60_000 };
-        self.output.change_current_state(
-            Some(mode),
-            Some(smithay::utils::Transform::Normal),
-            Some(self.output_scale.smithay_scale()),
-            Some((0, 0).into()),
-        );
-        self.output.set_preferred(mode);
+        self.set_output_mode((size.w, size.h));
         self.advertised_output_host = Some(host_id.clone());
     }
 
@@ -547,10 +578,6 @@ impl TawcState {
         }
 
         self.sync_primary_output_to_host(host_id);
-        if !self.output_advertised {
-            self.output.create_global::<TawcState>(&self.display_handle);
-            self.output_advertised = true;
-        }
     }
 
     pub fn sync_desktop_hosts(&mut self) {

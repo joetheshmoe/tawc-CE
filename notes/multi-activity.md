@@ -238,9 +238,12 @@ without re-importing.
 
 ## wl_output and toplevel sizing
 
-For the first cut, keep a single `wl_output` global advertising the primary
-display's geometry (read once at Service start from
-`Display.getRealMetrics`). Toplevels still see "the screen." This is a
+A single `wl_output` global, created in `TawcState::new` and alive for the
+whole compositor lifetime. Its mode starts as the Android panel size
+(`Display.getRealMetrics`, read in `CompositorService` and passed through
+`nativeStartCompositor`) and switches to the backing host's physical size
+on the first Activity surface registration. `TawcState::set_output_mode`
+is the only writer. Toplevels still see "the screen." This is a
 deliberate simplification:
 
 - It avoids touching xdg-output / per-output enter/leave plumbing now.
@@ -250,12 +253,21 @@ deliberate simplification:
   natural extensions: they'd add per-host outputs without restructuring
   the assignment layer.
 
+Why advertise before any host exists: zero outputs is a state very little
+client code handles. `SDL_VideoInit` fails outright ("The video driver did
+not add any displays"), taking down every SDL app started against a cold
+compositor, and Xwayland has no root-window geometry. The provisional mode
+overestimates the eventual Activity surface (panel 1080x2400 vs Activity
+1080x2169 on the standing target); that costs one ordinary mode change,
+which clients already handle for rotation and scale changes. Guarded by
+`tests/integration/tests/cold_start.rs`.
+
 Configure-event sequencing:
 
-- A new toplevel is configured at the **primary display's** logical size
-  initially, even if its host is still `pending`. This matches what every
-  fullscreen Activity will resolve to on a phone, so the client paints
-  the right size immediately.
+- A new toplevel gets **no** configure until its host has a real logical
+  size (`configure_toplevel_for_host` returns `None` before that). The
+  provisional output mode is deliberately not used for sizing — nothing
+  is configured off a service-side guess.
 - When the host's `surfaceChanged` arrives with a different physical size
   (e.g. user is in split-screen on a tablet), the toplevel gets a fresh
   configure with the new logical size.

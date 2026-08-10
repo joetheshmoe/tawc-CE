@@ -13,9 +13,21 @@ tests/
   integration/                Rust tests on host
     tests/integration.rs        single test binary, declares the submodules
     tests/<module>.rs           one file per group; see its docstring
+    tests/cold_start.rs         separate binary, see below
 scripts/
   run-integration-tests.sh    Build everything, deploy, run integration tests
 ```
+
+**`cold_start` is the one exception**, because its assertions only hold
+before anything has opened a window: a client connecting to a compositor
+with zero hosts must still see a `wl_output` with a real mode. It is its
+own `[[test]]` target with `test = false`, so plain `cargo test` skips
+it; the run script invokes it explicitly (`cargo test --test cold_start`)
+right after the compositor-ready wait and before the main run, which is
+the only point where cold state provably exists. A failure there does
+not abort the main run — it is reported and folded into the exit status.
+Its `supertuxkart` case is the regression that hid for months behind
+warm suite ordering (see `issues/usecase_tests/`).
 
 Each test module's own docstring documents what it covers and what its
 prerequisites are. As of writing the modules are:

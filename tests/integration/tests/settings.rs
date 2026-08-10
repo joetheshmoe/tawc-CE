@@ -370,8 +370,6 @@ fn test_initial_configure_waits_for_real_host_size() {
     tawc_integration::helpers::test_init();
     assert_broker_ok(adb::set_output_scale(2.0).expect("set output scale"), "set-output-scale");
     let binary = ensure_wayland_debug_app();
-    let state_before = compositor::query_state(TIMEOUT)
-        .expect("query compositor state before initial configure test");
 
     let mut app = DebugApp::start(BACKEND, &binary, "initial-configure", "")
         .expect("start initial-configure debug app");
@@ -402,22 +400,28 @@ fn test_initial_configure_waits_for_real_host_size() {
         .expect("missing INITIAL_OUTPUT_GLOBALS payload")
         .parse::<u32>()
         .expect("parse INITIAL_OUTPUT_GLOBALS payload");
-    if !state_before.output_advertised {
-        assert_eq!(
-            initial_output_globals, 0,
-            "fresh compositor should not advertise wl_output before Activity surface registration"
-        );
-        let output_global_idx = first_tag_index(&lines, "OUTPUT_GLOBAL")
-            .expect("missing post-registration OUTPUT_GLOBAL");
-        assert!(
-            initial_idx < output_global_idx,
-            "wl_output global arrived before the pre-Activity registry phase: {lines:?}"
-        );
-    }
+    // The output global exists for the whole life of the compositor, so a
+    // client always sees exactly one in its very first registry pass —
+    // before any Activity surface exists.
+    assert_eq!(
+        initial_output_globals, 1,
+        "compositor should advertise wl_output in the pre-Activity registry phase: {lines:?}"
+    );
+    // ...and with a real mode: zero outputs and a 0x0 output are equally
+    // unusable to clients that size themselves off the display.
+    let mode_idx = first_tag_index(&lines, "OUTPUT_MODE").expect("missing OUTPUT_MODE");
+    assert!(
+        mode_idx < initial_idx,
+        "wl_output mode should arrive during the pre-Activity registry phase: {lines:?}"
+    );
+    let mode = first_i32_pair_with_tag(&app, "OUTPUT_MODE");
+    assert!(
+        mode.0 > 0 && mode.1 > 0,
+        "pre-Activity wl_output mode must be nonzero, got {mode:?}"
+    );
 
     let state = compositor::query_state(TIMEOUT)
         .expect("query compositor state after initial configure");
-    assert!(state.output_advertised, "output should be advertised after host size");
     let configure_size = first_i32_pair_with_tag(&app, "CONFIGURE_SIZE");
     let configure_bounds = first_i32_pair_with_tag(&app, "CONFIGURE_BOUNDS");
     assert_eq!(

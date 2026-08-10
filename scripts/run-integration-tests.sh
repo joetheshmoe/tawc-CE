@@ -108,7 +108,7 @@ set_required_packages() {
                 gtk3 gtk3-demos gtk4-demos firefox supertuxkart lxterminal
                 mesa-utils weston vulkan-tools
                 xorg-xclock
-                mesa-demos
+                mesa-demos python
             )
             PACKAGE_CHECK_CMD="pacman -Q ${REQUIRED_PKGS[*]} >/dev/null 2>&1"
             INSTALL_CMD="pacman -Syu --noconfirm --needed ${REQUIRED_PKGS[*]}"
@@ -117,7 +117,7 @@ set_required_packages() {
             REQUIRED_PKGS=(
                 gtk4 cairo wayland libX11 libxcb libglvnd
                 gtk+3 gtk+3-demo gtk4-demo firefox supertuxkart lxterminal
-                glxinfo weston Vulkan-Tools
+                glxinfo weston Vulkan-Tools python3
                 xclock
                 mesa-demos mesa-dri
                 dejavu-fonts-ttf
@@ -130,7 +130,7 @@ set_required_packages() {
                 libgtk-4-1 libcairo2 libwayland-client0 libx11-6 libxcb1 libglvnd0
                 libgtk-3-0 gtk-3-examples gtk-4-examples firefox supertuxkart lxterminal
                 mesa-utils mesa-utils-extra weston vulkan-tools gstreamer1.0-plugins-base
-                x11-apps dbus-x11
+                x11-apps dbus-x11 python3
                 libgl1-mesa-dri mesa-vulkan-drivers fonts-dejavu-core
             )
             PACKAGE_CHECK_CMD="dpkg-query -W ${REQUIRED_PKGS[*]} >/dev/null 2>&1"
@@ -403,10 +403,23 @@ if [ "${#EXTRA_RUSTFLAGS[@]}" -gt 0 ]; then
     export RUSTFLAGS="${RUSTFLAGS:-} ${EXTRA_RUSTFLAGS[*]}"
 fi
 cd "$ROOT_DIR/tests/integration"
+
+# Cold-start tests first: the compositor has been up since the readiness
+# wait above and no Activity surface has ever registered, which is the
+# only point in the run where that state provably holds. Its own binary
+# (`test = false`), so the main run below never re-runs it warm.
 set +e
+cargo test --test cold_start -- "${LIBTEST_ARGS[@]}"
+COLD_EXIT=$?
 cargo test -- "${LIBTEST_ARGS[@]}"
 TEST_EXIT=$?
 set -euo pipefail
+if [ "$COLD_EXIT" -ne 0 ]; then
+    echo "=== Cold-start tests FAILED (see above, before the main run) ==="
+    if [ "$TEST_EXIT" -eq 0 ]; then
+        TEST_EXIT=$COLD_EXIT
+    fi
+fi
 
 echo "=== Stopping compositor ==="
 adb shell am force-stop me.phie.tawc

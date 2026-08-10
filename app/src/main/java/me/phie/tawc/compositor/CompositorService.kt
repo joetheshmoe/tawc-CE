@@ -10,12 +10,15 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.hardware.display.DisplayManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.system.Os
+import android.util.DisplayMetrics
 import android.util.Log
+import android.view.Display
 import androidx.core.app.ServiceCompat
 import me.phie.tawc.AppPaths
 import me.phie.tawc.BuildConfig
@@ -152,8 +155,11 @@ class CompositorService : Service() {
         // reverse-JNI spawnActivity/finishActivity entry points work even
         // when no Activity is currently in the foreground.
         NativeBridge.attachService(this)
+        val displayMetrics = realDisplayMetrics()
         NativeBridge.nativeStartCompositor(
             me.phie.tawc.Settings.outputScale,
+            displayMetrics.widthPixels,
+            displayMetrics.heightPixels,
             me.phie.tawc.Settings.xwayland,
             me.phie.tawc.Settings.gtk3BrokenMenusWorkaround,
         )
@@ -168,6 +174,31 @@ class CompositorService : Service() {
         NativeBridge.nativeSetXwaylandEnabled(me.phie.tawc.Settings.xwayland)
         NativeBridge.nativeSetGtk3BrokenMenusWorkaround(me.phie.tawc.Settings.gtk3BrokenMenusWorkaround)
         lifecycle = Lifecycle.RUNNING
+    }
+
+    /** Full panel size of the default display, in physical pixels.
+     *
+     *  `DisplayManager` + `Display.getRealMetrics` is one code path that
+     *  works at minSdk and is safe from a Service;
+     *  `WindowManager.currentWindowMetrics` is API 30+ and behaves
+     *  differently from a non-visual context. Deprecated since API 31 but
+     *  stable, and the full panel size is what we want here.
+     *
+     *  This overestimates the eventual Activity surface (the Activity loses
+     *  system bars); the compositor only uses it as a provisional output
+     *  mode, corrected on the first Activity surface registration. A zero
+     *  here (no default display) is clamped and logged compositor-side. */
+    private fun realDisplayMetrics(): DisplayMetrics {
+        val metrics = DisplayMetrics()
+        val display = getSystemService(DisplayManager::class.java)
+            ?.getDisplay(Display.DEFAULT_DISPLAY)
+        if (display == null) {
+            Log.e(TAG, "no default display; compositor starts with no provisional output size")
+            return metrics
+        }
+        @Suppress("DEPRECATION")
+        display.getRealMetrics(metrics)
+        return metrics
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

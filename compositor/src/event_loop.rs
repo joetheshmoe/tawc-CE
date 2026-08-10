@@ -616,7 +616,7 @@ pub fn run(
                 .collect::<Vec<_>>()
                 .join(",");
             let payload = format!(
-                "clients={} toplevels={} surfaces_wlegl={} surfaces_shm={} frames={} rendered_toplevels={} hosts={} bound_hosts={} xwayland_running={} xwayland_pids={} x11_surfaces={} x11_surfaces_with_host={} wlegl_create_buffer_total={} wlegl_import_texture_total={} wlegl_buffer_destroy_total={} last_wlegl_width={} last_wlegl_height={} last_wlegl_format={} output_scale={:.2} output_physical_w={} output_physical_h={} output_logical_w={} output_logical_h={} output_advertised={}",
+                "clients={} toplevels={} surfaces_wlegl={} surfaces_shm={} frames={} rendered_toplevels={} hosts={} bound_hosts={} xwayland_running={} xwayland_pids={} x11_surfaces={} x11_surfaces_with_host={} wlegl_create_buffer_total={} wlegl_import_texture_total={} wlegl_buffer_destroy_total={} last_wlegl_width={} last_wlegl_height={} last_wlegl_format={} output_scale={:.2} output_physical_w={} output_physical_h={} output_logical_w={} output_logical_h={}",
                 clients,
                 toplevel_count(data),
                 surfaces_wlegl,
@@ -640,7 +640,6 @@ pub fn run(
                 data.output_physical_size.1,
                 data.output_logical_size.0,
                 data.output_logical_size.1,
-                data.output_advertised,
             );
             let _ = response.send(payload);
         }
@@ -1021,15 +1020,9 @@ fn apply_output_scale(state: &mut TawcState, scale: OutputScale) {
     {
         state.sync_advertised_output_to_host_if_visible(&host_id);
     } else {
-        let (pw, ph) = state.output_physical_size;
-        state.output_logical_size = scale.logical_size(pw, ph);
-        let mode_size = if pw > 0 && ph > 0 { (pw, ph) } else { (1, 1) };
-        state.output.change_current_state(
-            Some(smithay::output::Mode { size: mode_size.into(), refresh: 60_000 }),
-            None,
-            Some(scale.smithay_scale()),
-            None,
-        );
+        // No host yet: keep the provisional startup mode, re-derived at
+        // the new scale.
+        state.set_output_mode(state.output_physical_size);
     }
     state.sync_desktop_hosts();
 
