@@ -27,13 +27,14 @@ reporting rules.
    frozen frame).
 5. Watch stability ~2 minutes of input; then quit via the in-game menu
    (Esc → Quit) rather than killing it, to test clean SDL teardown.
-6. If launch fails with SDL "video subsystem not initialized": that is
-   `issues/usecase_tests/sdl-haptic-udev-netlink-kills-video-init.md`
-   — the game's single `SDL_Init` call includes `SDL_INIT_HAPTIC`,
-   which fails on Android's denied udev netlink socket and rolls the
-   already-initialized video subsystem back. Confirm it is the same bug
-   rather than filing a new one; there is no app-side workaround until
-   tawcroot fakes the netlink socket.
+6. If launch fails before a window appears, check against
+   `issues/usecase_tests/sdl-games-blocked-cold-start-output-and-egl-config.md`
+   before filing anything new. Two known blockers live there: SDL sees
+   no display at all unless some window is already open (the compositor
+   advertises `wl_output` only once an Activity surface exists), and
+   `SDL_CreateWindow(SDL_WINDOW_OPENGL)` fails EGL config selection.
+   Open an unrelated window first (e.g. `xterm`) to get past the first
+   one.
 
 ## Expected results
 
@@ -45,9 +46,8 @@ reporting rules.
 
 ## Known issues / caveats
 
-- `issues/usecase_tests/sdl-haptic-udev-netlink-kills-video-init.md` —
-  the blocker for this test. Any SDL app whose main `SDL_Init` asks for
-  video *and* haptic loses video entirely.
+- `issues/usecase_tests/sdl-games-blocked-cold-start-output-and-egl-config.md`
+  — the two remaining blockers for this test.
 - No audio bridge exists (plans/audio.md); silence is expected.
 - `issues/hardware-backspace-stuck-down.md` if you use Backspace in
   menus.
@@ -100,10 +100,25 @@ build. But the cause is now pinned and it is **not** the compositor's
   screenshot of its real menu). It only logs the same haptic error and
   survives, because it inits haptic separately.
 
-Filed as `issues/usecase_tests/sdl-haptic-udev-netlink-kills-video-init.md`
-(replaces the now-disproven `supertuxkart-sdl-no-displays.md`, deleted).
-Re-run this plan once tawcroot fakes the netlink socket. Not added to
-Completed.
+The haptic/udev half was then **fixed** the same day: tawcroot
+substitutes a silent AF_UNIX stub when the kernel denies the uevent
+netlink socket (notes/tawcroot/status.md "Accepted syscall-fidelity
+divergences"), after which `SDL_Init(SDL_INIT_EVERYTHING)` returns 0
+with 1 display and doomretro gets past init entirely. Two further
+blockers were uncovered underneath and now own this test:
+
+1. SDL sees zero displays unless a window is already open — the
+   compositor advertises `wl_output` only once an Activity surface
+   registers. This turned out to be the original
+   `supertuxkart-sdl-no-displays` bug, and explains why it looked
+   intermittent (focused runs = cold compositor; full suite = warm).
+2. With that worked around, `SDL_CreateWindow(SDL_WINDOW_OPENGL)` fails
+   `eglChooseConfig` with `EGL_BAD_ATTRIBUTE`, for any SDL GL window.
+   SDL's non-GL SHM path is fine.
+
+Both in
+`issues/usecase_tests/sdl-games-blocked-cold-start-output-and-egl-config.md`.
+Re-run this plan once they land. Not added to Completed.
 
 Cleanup done: doomretro + SDL deps removed, `/root/usecase-doom` and
 `/tmp/*.log` deleted, screenshots deleted device-side and host-side.

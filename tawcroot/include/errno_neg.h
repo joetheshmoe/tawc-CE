@@ -46,6 +46,7 @@
 #define TAWC_ENODATA       (-61)
 #define TAWC_EOPNOTSUPP    (-95)
 #define TAWC_EPROTONOSUPPORT (-93)
+#define TAWC_EADDRINUSE    (-98)
 
 /* Compile-time guard against the previous positive-valued convention
  * silently coming back. If a future edit defines `TAWC_EINVAL` as `22`,

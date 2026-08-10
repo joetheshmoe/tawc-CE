@@ -116,6 +116,7 @@ build_static  static_fork_closefrom_exec_argv1
 build_static  static_vfork_exec_then_fork_exec_argv1
 build_static  static_fexecve_argv1
 build_static  static_unix_bind_argv1
+build_static  static_uevent_socket
 build_static  static_check_proc_self_fd
 build_static  static_getdents_legacy_check
 build_static  static_check_proc_exe_argv0

@@ -178,6 +178,21 @@ fn test_prodenv_proc_self_fd_hides_reserved() {
     assert_guest_exit("static_check_proc_self_fd", &out, 42);
 }
 
+/// libudev's uevent-monitor bring-up must complete at the app uid.
+/// `socket(AF_NETLINK, …, NETLINK_KOBJECT_UEVENT)` is EACCES for
+/// untrusted_app, which libudev reports as a NULL monitor — and that
+/// takes down SDL_INIT_HAPTIC and, through SDL3's atomic SDL_Init, the
+/// guest's video subsystem with it (issue:
+/// sdl-haptic-udev-netlink-kills-video-init). Only meaningful here: the
+/// hosted suite and `tawcroot/test.sh --device` run where the kernel
+/// may hand out a real netlink socket, so they cannot prove the stub.
+#[test]
+fn test_prodenv_uevent_socket_stub() {
+    test_init();
+    let out = run_guest(&[], &["/bin/static_uevent_socket"], &[]).expect("broker spawn");
+    assert_guest_exit("static_uevent_socket", &out, 42);
+}
+
 /// io_uring defense-in-depth deny: all three io_uring syscalls return
 /// ENOSYS to the guest. Runs under the real zygote filter, so this is
 /// also ground truth that Android's own filter doesn't preempt

@@ -44,6 +44,7 @@ const STAGED_PROGRAMS: &[&str] = &[
     "static_open_creat_argv1",
     "static_open_rdonly_argv1",
     "static_unix_bind_argv1",
+    "static_uevent_socket",
     "static_check_proc_self_fd",
     "static_io_uring_deny",
     "static_drop_ids_devnull_eperm",

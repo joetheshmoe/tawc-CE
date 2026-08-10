@@ -334,6 +334,27 @@ covered by unit/hosted/smoke tests.)
   EINVAL. `SECCOMP_FILTER_FLAG_NEW_LISTENER` stays an honest `-EPERM`
   (success would promise a user-notif fd nothing backs);
   `PR_GET_SECCOMP` passes through, truthfully reporting filter mode.
+- **The uevent netlink monitor is a silent AF_UNIX stub.**
+  `socket(AF_NETLINK, *, NETLINK_KOBJECT_UEVENT)` is EACCES for
+  `untrusted_app`, and libudev treats a NULL monitor as fatal — which
+  killed `SDL_INIT_HAPTIC`, which (SDL3's `SDL_Init` being atomic) tore
+  the guest's already-initialized *video* subsystem down with it, so
+  SDL games died reporting "Video subsystem has not been initialized".
+  Only once the kernel has refused, `handle_socket` substitutes an
+  AF_UNIX datagram socket nothing sends to; libudev's remaining calls
+  are satisfied by faking `bind()` of a `sockaddr_nl` and reporting a
+  synthesized `sockaddr_nl` from `getsockname()` (syscalls_socket.c,
+  `TAWC_UEVENT_TAG`). Consumers then enumerate zero devices and never
+  see a hotplug event — truthful, since an app uid genuinely cannot
+  receive them, and the same shape libudev already falls back to in a
+  container with no udevd. The stub identifies itself by the abstract
+  name it binds, so there is no fd table to keep straight across
+  fork/exec or fd reuse. Deliberately *not* generalized to other
+  netlink protocols: `NETLINK_ROUTE` keeps its real `EACCES` on bind,
+  so `getifaddrs()` consumers still fail fast instead of waiting on a
+  reply that can't come. Covered by `test_prodenv_uevent_socket_stub`
+  (the only suite running in the untrusted_app domain, where the
+  denial is real) plus a hosted contract test.
 - **Read-only-bind errno shapes** (see notes/tawcroot/
   path-translation.md §"Read-only binds" for the full table): linkat
   with a *source* in an RO bind returns `EXDEV` even same-fs — the

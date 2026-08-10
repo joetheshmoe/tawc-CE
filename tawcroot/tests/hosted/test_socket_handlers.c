@@ -18,6 +18,8 @@
 
 #include <cleat/test.h>
 
+#include <errno.h>
+#include <linux/netlink.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -315,6 +317,67 @@ test(hosted_so_peercred_reports_virtual_root)
 
 	test_int_eq(close(sv[0]), 0);
 	test_int_eq(close(sv[1]), 0);
+	th_teardown(&v);
+}
+
+/* ----- uevent monitor socket --------------------------------------- */
+
+/* libudev's device_monitor_new_full() sequence must complete, or every
+ * udev consumer dies — for SDL that means SDL_INIT_HAPTIC fails and
+ * SDL3's atomic SDL_Init tears video down with it, so games report
+ * "Video subsystem has not been initialized" (issue:
+ * sdl-haptic-udev-netlink-kills-video-init).
+ *
+ * The sequence is: socket(AF_NETLINK, …, NETLINK_KOBJECT_UEVENT),
+ * setsockopt(SO_PASSCRED), bind(sockaddr_nl), getsockname() for the
+ * assigned port id — with only the socket() and getsockname() results
+ * checked by callers, and monitor creation fatal if either fails.
+ *
+ * Asserting the observable contract rather than the mechanism keeps
+ * this valid wherever it runs: the host (and `--device`, which runs as
+ * the adb shell uid) may well get a real netlink socket from the
+ * kernel, in which case this pins that the handler did not break it.
+ * The stub itself is only reachable where the kernel refuses, i.e. the
+ * app uid — covered by `test_prodenv_uevent_socket_stub` in the tawc
+ * integration suite, which runs production tawcroot in the
+ * untrusted_app domain. */
+test(hosted_uevent_monitor_sequence_completes)
+{
+	th_view v;
+	th_setup(&v, "uevent");
+
+	long fd = th_sys(TAWC_SYS_socket, AF_NETLINK,
+			 SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK,
+			 NETLINK_KOBJECT_UEVENT, 0, 0, 0);
+	test_true(fd >= 0);
+
+	/* Native on both a netlink socket and the AF_UNIX stub; untrapped,
+	 * so it goes straight to the kernel either way. */
+	int one = 1;
+	test_int_eq(setsockopt((int)fd, SOL_SOCKET, SO_PASSCRED,
+			       &one, sizeof one), 0);
+
+	struct sockaddr_nl snl;
+	memset(&snl, 0, sizeof snl);
+	snl.nl_family = AF_NETLINK;
+	snl.nl_groups = 0;  /* no multicast: needs no CAP_NET_ADMIN */
+	test_int_eq(th_sys(TAWC_SYS_bind, fd, &snl, sizeof snl, 0, 0, 0), 0);
+
+	/* monitor_set_nl_address() reads nl_pid back out of this. */
+	struct sockaddr_nl got;
+	memset(&got, 0xff, sizeof got);
+	unsigned int len = sizeof got;
+	test_int_eq(th_sys(TAWC_SYS_getsockname, fd, &got, &len, 0, 0, 0), 0);
+	test_int_eq(len, sizeof got);
+	test_int_eq(got.nl_family, AF_NETLINK);
+	test_int_eq(got.nl_groups, 0);
+
+	/* Subscribed to nothing, so a read never has anything for us. */
+	char buf[64];
+	test_int_eq((int)recv((int)fd, buf, sizeof buf, MSG_DONTWAIT), -1);
+	test_int_eq(errno, EAGAIN);
+
+	test_int_eq(close((int)fd), 0);
 	th_teardown(&v);
 }
 

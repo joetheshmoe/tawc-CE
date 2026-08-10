@@ -66,14 +66,29 @@
 #include "raw_sys.h"
 #include "syscalls_socket.h"
 #include "sysnr.h"
+#include "tawc_string.h"
 #include "tawc_uapi.h"
 #include "usercopy.h"
 
 #define AF_UNIX_FAMILY  1
 #define AF_NETLINK_FAMILY  16
 #define NETLINK_AUDIT_PROTO 9
+#define NETLINK_KOBJECT_UEVENT_PROTO 15
 #define SOL_SOCKET_LEVEL 1
 #define SO_PEERCRED_OPT 17
+#define SOCK_TYPE_MASK  0xf
+#define SOCK_DGRAM_TYPE 2
+
+/* sockaddr_nl layout, mirrored locally for the same reason as
+ * sockaddr_un below (no kernel headers in the freestanding build):
+ *   uint16_t nl_family;  uint16_t nl_pad;
+ *   uint32_t nl_pid;     uint32_t nl_groups;   */
+struct tawc_sockaddr_nl {
+	uint16_t nl_family;
+	uint16_t nl_pad;
+	uint32_t nl_pid;
+	uint32_t nl_groups;
+};
 
 /* sockaddr_un layout, mirrored locally to avoid pulling <sys/un.h>:
  *   uint16_t sun_family;
@@ -87,6 +102,122 @@ struct tawc_sockaddr_un {
 	uint16_t sun_family;
 	char     sun_path[108];
 };
+
+/* Uevent-monitor stub sockets (issue: sdl-haptic-udev-netlink-kills-
+ * video-init).
+ *
+ * `socket(AF_NETLINK, *, NETLINK_KOBJECT_UEVENT)` is denied to
+ * untrusted_app by Android's SELinux policy (EACCES), and libudev
+ * treats that as fatal: `udev_monitor_new_from_netlink()` returns NULL,
+ * so `SDL_UDEV_Init()` fails, so `SDL_INIT_HAPTIC` fails — and SDL3's
+ * SDL_Init is atomic, tearing the already-initialized video subsystem
+ * back down. Net effect: any SDL game whose main `SDL_Init` asks for
+ * video and haptic together dies reporting "Video subsystem has not
+ * been initialized" (DOOM Retro does; SuperTuxKart inits haptic
+ * separately and only logs a warning).
+ *
+ * When the kernel denies the socket we hand back an AF_UNIX datagram
+ * socket that nothing ever sends to: creation succeeds, reads block /
+ * EAGAIN forever, poll never fires. That is a truthful emulation, not
+ * a lie — an app uid genuinely cannot receive device hotplug events on
+ * Android, and it matches how libudev already behaves in a container
+ * (device-monitor.c drops to MONITOR_GROUP_NONE when no udevd is
+ * running, so the socket exists but is subscribed to nothing).
+ * Consumers then enumerate zero devices, which is what a desktop with
+ * no force-feedback hardware looks like.
+ *
+ * We only substitute after the real syscall fails with EACCES/EPERM, so
+ * on a host where netlink works the guest keeps the real socket and
+ * real events.
+ *
+ * The stub binds itself to an abstract name carrying TAWC_UEVENT_TAG so
+ * later syscalls can recognize it with no fd bookkeeping: no table to
+ * keep in sync across fork/exec, and nothing to confuse when the guest
+ * closes the fd and the kernel reuses the number for something else.
+ * libudev's remaining calls then work out: `setsockopt(SO_PASSCRED)` is
+ * native on AF_UNIX, `bind()` of a sockaddr_nl is answered 0 (see
+ * handle_bind), and `getsockname()` reports a synthesized sockaddr_nl
+ * (see getname_with_reverse) so `monitor_set_nl_address()` succeeds. */
+#define TAWC_UEVENT_TAG "tawcroot-uevent."
+
+/* True iff a kernel-returned sockaddr is one of our stubs' abstract
+ * names. `len` is the kernel's reported addrlen. */
+static int is_uevent_stub_name(const struct tawc_sockaddr_un *un, long len)
+{
+	size_t tag = sizeof(TAWC_UEVENT_TAG) - 1;
+	if (un->sun_family != AF_UNIX_FAMILY) return 0;
+	if (len < (long)(sizeof(uint16_t) + 1 + tag)) return 0;
+	if (un->sun_path[0] != '\0') return 0;  /* abstract namespace */
+	return memcmp(un->sun_path + 1, TAWC_UEVENT_TAG, tag) == 0;
+}
+
+/* Ask the kernel whether `fd` is one of our stubs. Only called from
+ * bind(), and only for an AF_NETLINK address, so the extra syscall
+ * never lands on a hot path. */
+static int fd_is_uevent_stub(int fd)
+{
+	struct tawc_sockaddr_un un;
+	uint32_t len = sizeof un;
+	memset(&un, 0, sizeof un);
+	long rv = TAWC_RAW(TAWC_SYS_getsockname, fd, (long)&un, (long)&len,
+			   0, 0, 0);
+	if (rv < 0) return 0;
+	return is_uevent_stub_name(&un, (long)len);
+}
+
+/* Build "\0tawcroot-uevent.<pid>.<seq>" into `un`; returns the addrlen
+ * (abstract names are not NUL-terminated — the length delimits them). */
+static long uevent_stub_addr(struct tawc_sockaddr_un *un, unsigned long pid,
+			     unsigned long seq)
+{
+	memset(un, 0, sizeof *un);
+	un->sun_family = AF_UNIX_FAMILY;
+	size_t pos = 1;  /* sun_path[0] stays NUL: abstract namespace */
+	const char *tag = TAWC_UEVENT_TAG;
+	for (size_t i = 0; tag[i]; i++) un->sun_path[pos++] = tag[i];
+	unsigned long parts[2] = { pid, seq };
+	for (int p = 0; p < 2; p++) {
+		char tmp[21];
+		int n = 0;
+		unsigned long v = parts[p];
+		do { tmp[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+		while (n) un->sun_path[pos++] = tmp[--n];
+		if (p == 0) un->sun_path[pos++] = '.';
+	}
+	return (long)(sizeof(uint16_t) + pos);
+}
+
+/* Create a stub for a denied uevent socket. `type` is the guest's
+ * socket type word: the base type (SOCK_RAW) is replaced with
+ * SOCK_DGRAM (AF_UNIX has no raw sockets) while SOCK_CLOEXEC /
+ * SOCK_NONBLOCK are preserved — libudev asks for both and relies on
+ * the non-blocking read. Returns the fd, or a negative errno for the
+ * caller to fall back on. */
+static long open_uevent_stub(long type)
+{
+	long fd = TAWC_RAW(TAWC_SYS_socket, AF_UNIX_FAMILY,
+			   (type & ~(long)SOCK_TYPE_MASK) | SOCK_DGRAM_TYPE,
+			   0, 0, 0, 0);
+	if (fd < 0) return fd;
+
+	/* A process can hold several monitors; the abstract name must be
+	 * unique per socket. The counter is per-process (a fork inherits
+	 * it, but the pid in the name keeps children distinct), and any
+	 * residual collision retries. */
+	static unsigned long uevent_seq;
+	long pid = TAWC_RAW(TAWC_SYS_getpid, 0, 0, 0, 0, 0, 0);
+	for (int attempt = 0; attempt < 64; attempt++) {
+		struct tawc_sockaddr_un un;
+		long addrlen = uevent_stub_addr(&un, (unsigned long)pid,
+						uevent_seq++);
+		long e = TAWC_RAW(TAWC_SYS_bind, fd, (long)&un, addrlen,
+				  0, 0, 0);
+		if (e == 0) return fd;
+		if (e != TAWC_EADDRINUSE) break;
+	}
+	tawc_close((int)fd);
+	return TAWC_EACCES;
+}
 
 /* Look up the host path stored for `base_fd`. Matches against rootfs
  * first, then the bind table. Returns NULL if nothing matches; in that
@@ -434,9 +565,23 @@ static void reverse_translate_unix_sockaddr(struct tawc_sockaddr_un *kern_addr,
 		(gn < (long)sizeof kern_addr->sun_path ? 1 : 0);
 }
 
+/* A uevent stub is an AF_UNIX socket, so libudev's `bind()` of a
+ * sockaddr_nl would fail EINVAL and take the monitor down with it.
+ * Answer 0 instead. The AF_NETLINK family in the guest's address is
+ * what gates this, and a real netlink fd still gets the kernel's own
+ * answer (an unfaked NETLINK_ROUTE bind keeps failing EACCES, so
+ * getifaddrs consumers still fail fast rather than waiting on a reply
+ * that can't come). */
 static long handle_bind(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
+	const void *addr = (const void *)(uintptr_t)args->b;
+	if (addr && (long)args->c >= (long)sizeof(uint16_t)) {
+		uint16_t fam;
+		if (tawc_copy_from_guest(&fam, sizeof fam, addr) == 0 &&
+		    fam == AF_NETLINK_FAMILY && fd_is_uevent_stub((int)args->a))
+			return 0;
+	}
 	return do_translate_unix_addr(TAWC_SYS_bind, args);
 }
 
@@ -558,7 +703,22 @@ static long getname_with_reverse(int nr, long a, long guest_addr_l,
 	if (rv < 0) return rv;
 
 	long kern_len = (long)klen;
-	reverse_translate_unix_sockaddr(&kbuf, &kern_len);
+	/* A uevent stub must look like the netlink socket the guest asked
+	 * for, not like the AF_UNIX socket we handed it: libudev's
+	 * monitor_set_nl_address() reads nl_pid out of getsockname and
+	 * fails the whole monitor if the call errors. Report the address
+	 * an autobound netlink socket would have (port id = pid, no
+	 * multicast groups). */
+	if (nr == TAWC_SYS_getsockname && is_uevent_stub_name(&kbuf, kern_len)) {
+		struct tawc_sockaddr_nl nl;
+		memset(&nl, 0, sizeof nl);
+		nl.nl_family = AF_NETLINK_FAMILY;
+		nl.nl_pid = (uint32_t)TAWC_RAW(TAWC_SYS_getpid, 0, 0, 0, 0, 0, 0);
+		memcpy(&kbuf, &nl, sizeof nl);
+		kern_len = (long)sizeof nl;
+	} else {
+		reverse_translate_unix_sockaddr(&kbuf, &kern_len);
+	}
 
 	/* Copy back up to the guest's buffer cap (kernel truncates); write
 	 * the FULL translated length to *addrlen regardless (kernel
@@ -708,7 +868,18 @@ static long handle_socket(const tawcroot_syscall_args *args, ucontext_t *uc)
 	if ((int)args->a == AF_NETLINK_FAMILY &&
 	    (int)args->c == NETLINK_AUDIT_PROTO)
 		return TAWC_EPROTONOSUPPORT;
-	return TAWC_RAW(TAWC_SYS_socket, args->a, args->b, args->c, 0, 0, 0);
+	long rv = TAWC_RAW(TAWC_SYS_socket, args->a, args->b, args->c,
+			   0, 0, 0);
+	/* Substitute a silent stub only for the uevent monitor, and only
+	 * once the kernel has actually refused us — see TAWC_UEVENT_TAG. */
+	if (rv == TAWC_EACCES || rv == TAWC_EPERM) {
+		if ((int)args->a == AF_NETLINK_FAMILY &&
+		    (int)args->c == NETLINK_KOBJECT_UEVENT_PROTO) {
+			long stub = open_uevent_stub(args->b);
+			if (stub >= 0) return stub;
+		}
+	}
+	return rv;
 }
 
 void tawcroot_socket_register(void)
