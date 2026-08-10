@@ -147,13 +147,13 @@ static void add_to_reserved_list(int fd)
 {
 	if (tawcroot_n_reserved_fds >= TAWCROOT_MAX_RESERVED_FDS) {
 		/* Table full: the fd stays usable internally but is NOT
-		 * protected — neither the BPF close trap (baked at install)
-		 * nor tawcroot_fd_is_reserved will recognise it, so a guest
-		 * close() reaches the kernel. Unreachable in practice (64
-		 * slots vs ≤ 33 users). Note that even WITH a slot, fds
-		 * reserved after filter install are missed by the BPF close
-		 * fast path — see issues/tawcroot-close-fastpath-misses-
-		 * runtime-reserved-fds.md. */
+		 * protected — tawcroot_fd_is_reserved won't recognise it, so
+		 * the trapped close() forwards to the kernel and the guest
+		 * really closes our memfd. Unreachable in practice (64 slots
+		 * vs ≤ 33 users). Fds reserved after filter install ARE
+		 * covered by the BPF close trap itself: it range-compares
+		 * args[0] against TAWCROOT_RESERVED_FD_BASE rather than
+		 * baking in the install-time set (filter_build.c). */
 		return;
 	}
 	tawcroot_reserved_fds[tawcroot_n_reserved_fds++] = fd;

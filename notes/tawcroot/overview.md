@@ -38,8 +38,8 @@ Why C, not C++ or Rust:
   tightest of the three — panics unwind into Drop, the whole
   handler ends up `unsafe`. We also get little of Rust's
   memory-safety value because we already trust the guest. Build
-  overhead (cargo + cargo-ndk for one small `.so`) is real friction
-  for a ~3 kLoC project.
+  overhead (cargo + cargo-ndk for one more `.so`) is real friction
+  for something this self-contained.
 - **C++** would give us nicer toys outside the handler (RAII,
   templates, `string_view`) but adds toolchain weight (libc++
   static-link, `-fno-exceptions -fno-rtti -fno-unwind-tables`,
@@ -91,10 +91,12 @@ Constraints baked into the design:
   flags are moot (no PLT exists), but `-fvisibility=hidden`
   still helps the linker drop unused symbols.
 
-If we outgrow C — e.g. tawcroot balloons past ~10 kLoC, or we want
-real ADTs for syscall results — revisit. The "Language" decision
-is reviewable, the "C handler core" decision less so (the handler
-shape is what it is).
+The "Language" decision is reviewable if the constraints that
+produced it stop holding — e.g. we want real ADTs for syscall results
+badly enough to pay for a runtime, or the no-libc/no-allocation rule
+stops being what the handler needs. Codebase size on its own is not
+the trigger; it only ever moves one way. The "C handler core"
+decision is less reviewable — the handler shape is what it is.
 
 ## Why not just keep proot
 
@@ -161,9 +163,12 @@ pure helper (`tawcroot_path_binds_reanchor` in
 The architecture is therefore deliberately structured to make adding
 those things later cheap, not just to ship MVP fast:
 
-- **Per-syscall handler files** (`src/syscalls/fs.c`, `exec.c`,
-  `proc.c`, `deny.c`) so a new feature is "add a `.c` and a
-  dispatch entry," not "edit a 2 kLoC file."
+- **Per-subsystem handler files** (`src/syscalls_fs.c`,
+  `syscalls_fd.c`, `syscalls_exec.c`, `syscalls_socket.c`,
+  `syscalls_control.c`, plus `chroot.c` / `shm.c` / `linkstore.c` for
+  the bigger features) so a new feature is "add a `.c` and a dispatch
+  entry," not "edit one giant file." Each file ends in a
+  `tawcroot_*_register()` that fills its dispatch slots.
 - **The dispatch table is a fixed array indexed by syscall number**,
   with `NULL` for unhandled. Adding a syscall means filling a
   slot and adding it to the BPF allowlist — no ordering hazards.
@@ -218,6 +223,23 @@ foreclose future expansion.
   guest despite `id` reporting uid 0 (`chmod 755 /` fixes it; Debian
   sid's `/` is 0700 and writable). That's a distro-tarball property,
   not a tawcroot bug — don't go looking for a missing handler.
+
+  **The identity is cosmetic in both directions, and that matters
+  for multi-user guests.** `set*id` writes a shadow struct
+  (`identity.c`); the kernel still sees the app uid, so dropping to
+  a guest "user" drops no actual authority — that process can still
+  read and write every file in the rootfs, including other users'
+  homes and `/etc/shadow`. `SO_PEERCRED` reports 0 for *every* peer
+  whose kernel uid is ours, so peer-cred socket auth inside the
+  guest authenticates everyone as root. And the shadow lives in
+  process memory the guest shares, so it can be rewritten outright.
+  Net: **a rootfs is a single security principal.** Guest-side user
+  accounts are a compatibility feature, not a boundary. Anything
+  that hands a shell to someone you would not give the whole rootfs
+  to — sshd, `su` to a service account, a multi-user setup — is
+  giving them the whole rootfs (and, via `ando` if enabled, the
+  app's Android authority). Say so wherever such a workload is
+  documented; do not describe guest uids as isolation.
 - **Not a 32-bit emulator.** Android lp32 is being phased out and
   our distros are lp64 only. The seccomp filter `KILL_PROCESS`es
   any 32-bit personality syscall as defense-in-depth.

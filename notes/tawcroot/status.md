@@ -1,10 +1,12 @@
 # tawcroot — known gaps, divergences, future work & maintenance
 
-## Known gaps to address before MVP
+## Settled foundations
 
-These are unresolved problems the design hasn't pinned down yet.
-Each needs an answer before the corresponding phase lands; flagged
-here so we don't ship MVP and discover them at runtime.
+Problems the pre-MVP design had to pin down. All of them are settled
+and implemented; the entries stay because the reference material
+(loader/auxv rules, filter-install constraints, resolver mode list) is
+still what you want when maintaining that code. **This is a record,
+not a to-do list** — live work lives in `issues/` and `plans/`.
 
 1. **~~`libtawcroot.so` must be statically linked~~ — RESOLVED.**
    Static linking against bionic's `libc.a` is confirmed viable.
@@ -253,34 +255,35 @@ here so we don't ship MVP and discover them at runtime.
    Android app zygote filter. This validates the entire re-exec chain
    before writing any path translation code.
 
-5. **Internal fd table and reserved range.** The design now requires
-   hidden tawcroot-owned fds, but the exact policy still needs to be
-   implemented before MVP path translation can be trusted. Define
-   `TAWCROOT_FD_BASE`, move `rootfs_fd`, bind fds, `our_binary_fd`,
-   proc/cache helper fds, and state helper fds into that range, and
-   make fd-returning guest syscalls avoid it. Trap `close`,
-   `close_range`, `dup`, `dup2`, `dup3`, and `fcntl` from phase 0.5.
-   Exit criteria: a guest can run `close_range(3, ~0U, 0)` and later
-   `open("/etc/passwd")` still translates through the rootfs.
+5. **~~Internal fd table and reserved range~~ — RESOLVED.**
+   `include/fdtab.h` + `src/syscalls_fd.c`: tawcroot-owned fds are
+   duped above `TAWCROOT_RESERVED_FD_BASE` and `close`/`close_range`/
+   `dup`/`dup2`/`dup3`/`fcntl` are trapped so guest operations on them
+   behave as `-EBADF`. The BPF close fast path is a range compare on
+   `args[0]`, so fds reserved after filter install are covered too.
+   `getdents64` hides reserved fds from `/proc/<pid>/fd` listings, which
+   is what stops glibc's `closefrom` fallback looping forever.
+   Exit criterion met: `close_range(3, ~0U, 0)` followed by an `open`
+   still translates. Residual sizing problem: see
+   `issues/tawcroot-reserved-fd-base-collides-with-guest-fds.md`.
 
-6. **Guest `SIGSYS` and seccomp virtualization.** The real `SIGSYS`
-   disposition and mask are tawcroot-owned process state. Implement a
-   minimal shadow signal table for guest-visible `SIGSYS` state, keep
-   the real handler installed and unblocked, and fake-accept guest
-   seccomp installation (validated no-op — see the divergences list
-   below). Exit criteria: after guest attempts to reset
-   `SIGSYS`, block it, and install a seccomp filter, a path syscall
-   still traps into tawcroot and succeeds.
+6. **~~Guest `SIGSYS` and seccomp virtualization~~ — RESOLVED.**
+   `src/signal_shadow.c` holds the guest-visible SIGSYS disposition
+   (seqlock'd, process-wide) and a tid-keyed blocked bit;
+   `src/syscalls_control.c` virtualizes `rt_sigaction(SIGSYS)`, strips
+   SIGSYS from `rt_sigprocmask` masks, and fake-accepts guest seccomp
+   installs. Real disposition and unblocked state stay ours. See
+   "Guest seccomp installs are fake-accepted" below for what that
+   costs.
 
-7. **Path resolver modes and fd provenance.** Manual path resolution
-   must be syscall-aware (`follow-final`, `no-follow-final`,
-   `parent-for-create`, `parent-for-remove/rename`, and two-path
-   operations). Build this as an explicit enum/API, not a boolean
-   "canonicalize" helper. Keep enough fd provenance to handle
-   fd-relative calls and fake-root metadata without leaking host paths.
-   Exit criteria: tests for `stat` vs `lstat`, `readlink`, `symlink`,
-   `unlink` of a symlink, `open(O_NOFOLLOW)`, and fd-relative
-   `openat`.
+7. **~~Path resolver modes and fd provenance~~ — RESOLVED.**
+   `tawcroot_path_mode` (`include/path.h`) is the explicit enum —
+   `FOLLOW` / `NOFOLLOW` / `PARENT_CREATE` / `PARENT_REMOVE` — paired
+   with `tawcroot_path_intent` for the read-only-bind check. fd-relative
+   calls reverse-translate through `/proc/self/fd/<n>` rather than a
+   provenance table (a real table stays a profile-first perf idea, see
+   "Future work"). Covered by `tests/unit/test_path_resolve` and the
+   hosted fs-handler suites.
 
 ## Accepted syscall-fidelity divergences
 
@@ -326,9 +329,12 @@ covered by unit/hosted/smoke tests.)
   `7ab700f170`, which made sandbox-install failure fatal in the
   preauth child (Firefox and dropbear tolerated the denial; sshd
   reset every connection). Consequences accepted: a guest asking for
-  confinement gets none (the process already sits under tawcroot's
-  filter + the Android app sandbox, and all guest processes share one
-  uid, so the boundary it wants mostly doesn't exist here), and the
+  confinement gets none — including sshd's own preauth privsep
+  sandbox, on a network-facing service (the process already sits
+  under tawcroot's filter + the Android app sandbox, and all guest
+  processes share one uid, so the boundary it wants mostly doesn't
+  exist here anyway — see notes/tawcroot/overview.md §"What it
+  explicitly is not" on a rootfs being one security principal), and the
   insn array is only checked for readability, not run through the BPF
   verifier — a malformed program "installs" where the kernel would
   EINVAL. `SECCOMP_FILTER_FLAG_NEW_LISTENER` stays an honest `-EPERM`
