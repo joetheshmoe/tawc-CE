@@ -17,7 +17,7 @@
 //! LocalSocket handles poorly.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -465,29 +465,52 @@ fn decode_value(s: &str) -> String {
     out
 }
 
+/// One LF-terminated header line into `buf`, hard-bounded by [MAX_LINE]
+/// and stripped of trailing CR/LF.
+///
+/// The bound is enforced by `take`, not by a length check afterwards:
+/// `BufRead::read_line` grows its target until it finds a newline, so a
+/// client that sends 4 GB without one would make the app allocate all
+/// of it before any check could fire. Bytes rather than `String` so the
+/// cap applies before UTF-8 validation; callers decode after.
+fn read_header_line(reader: &mut BufReader<UnixStream>, buf: &mut Vec<u8>) -> io::Result<()> {
+    buf.clear();
+    let n = reader.by_ref().take(MAX_LINE as u64).read_until(b'\n', buf)?;
+    if n == 0 {
+        return Err(proto_err("eof in header"));
+    }
+    if !buf.ends_with(b"\n") {
+        // No terminator: either the peer stopped mid-line, or the line
+        // is longer than we will ever accept.
+        return Err(proto_err(if n >= MAX_LINE {
+            "header line too long"
+        } else {
+            "eof in header"
+        }));
+    }
+    while matches!(buf.last(), Some(b'\n') | Some(b'\r')) {
+        buf.pop();
+    }
+    Ok(())
+}
+
+/// Header lines are UTF-8 by contract (notes/ando.md "Wire protocol").
+fn decode_line(buf: &[u8]) -> io::Result<&str> {
+    std::str::from_utf8(buf).map_err(|_| proto_err("non-UTF-8 header line"))
+}
+
 fn read_header(reader: &mut BufReader<UnixStream>) -> io::Result<Request> {
-    let mut line = String::new();
-    let mut read_line = |line: &mut String| -> io::Result<()> {
-        line.clear();
-        if reader.read_line(line)? == 0 {
-            return Err(proto_err("eof in header"));
-        }
-        if line.len() > MAX_LINE {
-            return Err(proto_err("header line too long"));
-        }
-        while line.ends_with('\n') || line.ends_with('\r') {
-            line.pop();
-        }
-        Ok(())
-    };
-    read_line(&mut line)?;
-    if line != "TAWCANDO 1" {
-        return Err(proto_err(format!("bad magic {:?}", line)));
+    let mut buf = Vec::new();
+    read_header_line(reader, &mut buf)?;
+    let magic = decode_line(&buf)?;
+    if magic != "TAWCANDO 1" {
+        return Err(proto_err(format!("bad magic {:?}", magic)));
     }
     let mut argv = Vec::new();
     let mut env = Vec::new();
     for _ in 0..MAX_HEADER_LINES {
-        read_line(&mut line)?;
+        read_header_line(reader, &mut buf)?;
+        let line = decode_line(&buf)?;
         if line.is_empty() {
             if argv.is_empty() {
                 return Err(proto_err("no ARGV"));
