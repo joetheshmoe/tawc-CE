@@ -326,14 +326,21 @@ hardening:
   real `SIGSYS`. Maintain a guest-visible shadow mask if needed, but
   clear `SIGSYS` before forwarding the real mask to the kernel.
 - `seccomp(SECCOMP_SET_MODE_*)` and `prctl(PR_SET_SECCOMP, ...)`:
-  return `-EPERM` without installing the guest's filter. We can't
-  honestly install it: stacked seccomp can `KILL_PROCESS` our
-  raw_syscall stub, return errno before our path-translation trap, or
-  `RET_TRAP` into a guest-owned `SIGSYS` path. Firefox 150.0.3 on
-  Arch Linux ARM / OnePlus 9 accepts this denial without a UI warning
-  or `unregister_tls_module` abort as of 2026-05-19. Read-only
-  seccomp ops (`SECCOMP_GET_ACTION_AVAIL` etc.) still pass through
-  verbatim.
+  fake-accept — validate arguments with the kernel's exact
+  `EFAULT`/`EINVAL` shapes (NULL-fprog support probes must keep
+  getting `-EFAULT`), then install nothing and return success. We
+  can't honestly install the filter: stacked seccomp can
+  `KILL_PROCESS` our raw_syscall stub, return errno before our
+  path-translation trap, or `RET_TRAP` into a guest-owned `SIGSYS`
+  path. And `-EPERM` (the pre-2026-08 contract) is no longer
+  tolerable: openssh-portable made sandbox-install failure fatal in
+  commit `7ab700f170` (mid-2026, shipped in 10.x), so stock sshd
+  killed every connection preauth on the denial
+  (dropbear/Firefox tolerated it — sshd was the forcing case). The
+  one still-denied shape is `SECCOMP_FILTER_FLAG_NEW_LISTENER` →
+  `-EPERM`: success promises a user-notif fd we can't mint.
+  Read-only seccomp ops (`SECCOMP_GET_ACTION_AVAIL` etc.) still pass
+  through verbatim.
 - `prctl(PR_GET_SECCOMP)` may return the host truth (`2`) or a
   guest-compatible value if a workload needs it; do not lie in ways
   that encourage a program to install a filter we will reject.

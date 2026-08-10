@@ -266,8 +266,9 @@ here so we don't ship MVP and discover them at runtime.
 6. **Guest `SIGSYS` and seccomp virtualization.** The real `SIGSYS`
    disposition and mask are tawcroot-owned process state. Implement a
    minimal shadow signal table for guest-visible `SIGSYS` state, keep
-   the real handler installed and unblocked, and deny guest seccomp
-   installation. Exit criteria: after guest attempts to reset
+   the real handler installed and unblocked, and fake-accept guest
+   seccomp installation (validated no-op — see the divergences list
+   below). Exit criteria: after guest attempts to reset
    `SIGSYS`, block it, and install a seccomp filter, a path syscall
    still traps into tawcroot and succeeds.
 
@@ -315,6 +316,24 @@ covered by unit/hosted/smoke tests.)
   leaves the kernel's answer untouched. Zero cost on ≥5.8 kernels.
   `MNT_ID_UNIQUE` itself (kernel 6.8) is not synthesized — nothing
   needs it and fdinfo has no unique id to parse.
+- **Guest seccomp installs are fake-accepted, not applied.**
+  `seccomp(SET_MODE_STRICT|FILTER)` / `prctl(PR_SET_SECCOMP)` validate
+  arguments with the kernel's exact EFAULT/EINVAL shapes, install
+  nothing, and return success (syscalls_control.c). Honest stacking
+  can't work (a guest filter would kill/short-circuit the handler's
+  own raw syscalls — no IP exemption for our text), and the previous
+  honest `-EPERM` broke stock openssh ≥ the mid-2026 portable commit
+  `7ab700f170`, which made sandbox-install failure fatal in the
+  preauth child (Firefox and dropbear tolerated the denial; sshd
+  reset every connection). Consequences accepted: a guest asking for
+  confinement gets none (the process already sits under tawcroot's
+  filter + the Android app sandbox, and all guest processes share one
+  uid, so the boundary it wants mostly doesn't exist here), and the
+  insn array is only checked for readability, not run through the BPF
+  verifier — a malformed program "installs" where the kernel would
+  EINVAL. `SECCOMP_FILTER_FLAG_NEW_LISTENER` stays an honest `-EPERM`
+  (success would promise a user-notif fd nothing backs);
+  `PR_GET_SECCOMP` passes through, truthfully reporting filter mode.
 - **Read-only-bind errno shapes** (see notes/tawcroot/
   path-translation.md §"Read-only binds" for the full table): linkat
   with a *source* in an RO bind returns `EXDEV` even same-fs — the

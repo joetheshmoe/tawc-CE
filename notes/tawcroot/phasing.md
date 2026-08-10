@@ -637,8 +637,9 @@
    vars. Firefox-side fixes landed: in-handler `/dev/shm` memfd
    emulation (`tawcroot/src/shm.c`) so Mozilla's `shm_open(3)`
    doesn't hard-assert; guest `seccomp(2)` /
-   `prctl(PR_SET_SECCOMP)` denial so Mozilla cannot stack a filter
-   that would bypass tawcroot's translation invariants;
+   `prctl(PR_SET_SECCOMP)` interception (denial at the time; now a
+   fake-accept, see status.md divergences) so Mozilla cannot stack a
+   filter that would bypass tawcroot's translation invariants;
    legacy x86_64 `readlink(2)` /proc/self/exe synthesis (the
    `readlinkat` handler had it but NR 89 didn't); host-auxv
    passthrough so the synthesized guest stack carries HWCAP /

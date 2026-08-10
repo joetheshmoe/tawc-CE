@@ -48,16 +48,29 @@ sshd may not). Finding out is the point.
 
 ## Known issues / caveats
 
-- Guest seccomp → EPERM, `setuid`-family behavior under fake root is
-  unverified (notes/tawcroot/status.md, notes/tawcroot/overview.md). If
-  sshd dies on these, capture the exact `-e` log lines for the issue.
+- Guest seccomp installs are fake-accepted since 2026-08 (validated
+  no-op; notes/tawcroot/status.md "Accepted syscall-fidelity
+  divergences") — sshd's sandbox "installs" and serves normally. On
+  builds older than that, sshd's preauth child died on the -EPERM.
 - No `systemctl` — daemons must be started by hand; a `System has not been
   booted with systemd` error from `systemctl` is expected behavior.
 
-## Run status — 2026-07-13, physical OnePlus (device 50f4ca18), Arch tawcroot
+## Run status — 2026-08-09, physical OnePlus (device 50f4ca18), Arch tawcroot
 
-**Partial pass.** openssh does NOT work; dropbear does. Issue filed:
-[issues/usecase_tests/openssh-seccomp-sandbox-eperm-kills-preauth-child.md](../../issues/usecase_tests/openssh-seccomp-sandbox-eperm-kills-preauth-child.md).
+**Pass.** openssh-10.4p1 serves key-authenticated sessions with working
+remote commands, both loopback and host-side via `adb forward`
+(`host-reached-openssh`, `uid=0(root)`), after the guest-seccomp
+fake-accept landed in tawcroot. dropbear also still works (2026-07-13
+run). Port-22 bind fails with a permission error for both servers as
+expected (no `CAP_NET_BIND_SERVICE`).
+
+Historical (2026-07-13): partial pass — openssh's preauth child died on
+tawcroot's then-`-EPERM` seccomp denial (`ssh_sandbox_child:
+prctl(PR_SET_SECCOMP): Operation not permitted [preauth]`, connection
+reset during kex; openssh ≥ portable commit `7ab700f170` treats sandbox
+setup failure as fatal and 10.x has no runtime opt-out). dropbear proved
+sockets and fake-root login were healthy. The issue file for that gap
+was resolved by the fake-accept and deleted.
 
 - openssh-10.4p1: installs, `ssh-keygen -A` ok, `sshd -D -e -p 2222`
   binds/listens fine, but every connection resets during kex. `-e` log:

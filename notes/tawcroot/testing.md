@@ -184,7 +184,7 @@ observation. Only `src/arch/*.S` stays freestanding-only.
    crashing", "getuid/stat/chown preserve the fake-root illusion",
    "guest `close_range` cannot kill tawcroot's internal fds",
    "guest `sigaction(SIGSYS)` / `sigprocmask` cannot disable
-   translation", "guest seccomp installation is denied", "linkat
+   translation", "guest seccomp installation is fake-accepted without installing", "linkat
    falls back to symlink on Android-style `EPERM`", "execve of a
    dynamically linked binary reaches the loader through PT_INTERP",
    etc. Today's modules: `test_prod_rootfs` / `test_prod_features` /

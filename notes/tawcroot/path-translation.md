@@ -481,7 +481,7 @@ of those need translation. The TRAP set should be strictly:
 - Runtime-control syscalls needed to preserve tawcroot's invariants
   (`close*`/`dup*`/`fcntl` for internal fd protection,
   `rt_sigaction`/`rt_sigprocmask` for `SIGSYS`, and
-  `seccomp`/`prctl` for guest filter denial).
+  `seccomp`/`prctl` for guest filter fake-accept).
 - `io_uring_setup` so path-bearing SQEs cannot bypass translation.
 - Any of the Android-stacked-filter set we want to silently rewrite.
 
