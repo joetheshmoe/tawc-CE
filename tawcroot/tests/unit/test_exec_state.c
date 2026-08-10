@@ -94,6 +94,27 @@ test(exec_state_zero_argv_envp)
 	free(buf);
 }
 
+/* argc must match the array. estimate_bytes stops at an embedded NULL
+ * while the writer's emit loop would deref it, so the writer rejects
+ * the shape rather than under-sizing the buffer and faulting. */
+test(exec_state_argc_past_null_argv_is_rejected)
+{
+	const char *argv[] = { "/bin/true", NULL, "unreachable", NULL };
+	const char *envp[] = { NULL };
+
+	/* The estimate short-circuits at the NULL — it is deliberately
+	 * survivable, just wrong (it sizes for argc == 1). */
+	size_t need = tawcroot_exec_state_estimate_bytes("/bin/true", 3, argv, envp, NULL);
+	uint8_t *buf = malloc(need + 4096);
+	test_nonnull(buf);
+
+	/* Generous buffer, so a rejection here is the argv scan, not ENOSPC. */
+	long w = tawcroot_exec_state_write(buf, need + 4096, "/bin/true", 3,
+	                                   argv, envp, NULL);
+	test_true(w < 0);
+	free(buf);
+}
+
 test(exec_state_buf_too_small)
 {
 	const char *argv[] = { "long-argument-name", NULL };

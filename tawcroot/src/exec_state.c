@@ -36,6 +36,11 @@ size_t tawcroot_exec_state_estimate_bytes(const char *path,
                                           const tawcroot_exec_state_extras *ex)
 {
 	size_t s = strlen(path) + 1;
+	/* Stops at an embedded NULL so a caller that got argc wrong still
+	 * gets a (short) answer rather than a fault. The writer rejects
+	 * that shape outright — see the argv scan in
+	 * tawcroot_exec_state_write — so the two can never disagree on a
+	 * buffer that is actually used. */
 	for (int i = 0; i < argc; i++) {
 		if (!argv[i]) break;
 		s += strlen(argv[i]) + 1;
@@ -83,6 +88,12 @@ long tawcroot_exec_state_write(void *buf, size_t buf_cap,
 {
 	if (!buf || !path || !argv || !envp) return TAWC_EINVAL;
 	if (argc < 0 || argc > TAWCROOT_EXEC_STATE_MAX_ARGS) return TAWC_E2BIG;
+	/* argv[0..argc) must be fully populated. estimate_bytes stops at an
+	 * embedded NULL while the emit loop below would deref it, so a
+	 * caller whose argc overruns its array would otherwise get an
+	 * undersized `need` and a NULL deref. Reject the shape instead. */
+	for (int i = 0; i < argc; i++)
+		if (!argv[i]) return TAWC_EINVAL;
 
 	int envc = count_envp(envp);
 	if (envc > TAWCROOT_EXEC_STATE_MAX_ENV) return TAWC_E2BIG;

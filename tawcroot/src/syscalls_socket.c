@@ -697,7 +697,19 @@ static long getname_with_reverse(int nr, long a, long guest_addr_l,
 	long e = tawc_copy_from_guest(&guest_cap, sizeof guest_cap, guest_lenp);
 	if (e < 0) return TAWC_EFAULT;
 
-	struct tawc_sockaddr_un kbuf;
+	/* Sized as sockaddr_storage (128), not sockaddr_un (110): these
+	 * three syscalls serve EVERY address family, and the kernel copies
+	 * out of its own `struct sockaddr_storage`, so 128 is the ABI's
+	 * hard ceiling and this buffer can never truncate. A bare
+	 * sockaddr_un would silently shorten any family needing more than
+	 * 110 bytes — none today, but the guest's own buffer is the only
+	 * thing that should ever clamp the result. */
+	union {
+		struct tawc_sockaddr_un un;
+		unsigned char           raw[128];
+	} kbuf;
+	_Static_assert(sizeof kbuf >= sizeof(struct tawc_sockaddr_un),
+		       "kernel sockaddr buffer must hold a full sockaddr_un");
 	uint32_t klen = sizeof kbuf;
 	long rv = TAWC_RAW(nr, a, (long)&kbuf, (long)&klen, d, 0, 0);
 	if (rv < 0) return rv;
@@ -709,7 +721,8 @@ static long getname_with_reverse(int nr, long a, long guest_addr_l,
 	 * fails the whole monitor if the call errors. Report the address
 	 * an autobound netlink socket would have (port id = pid, no
 	 * multicast groups). */
-	if (nr == TAWC_SYS_getsockname && is_uevent_stub_name(&kbuf, kern_len)) {
+	if (nr == TAWC_SYS_getsockname &&
+	    is_uevent_stub_name(&kbuf.un, kern_len)) {
 		struct tawc_sockaddr_nl nl;
 		memset(&nl, 0, sizeof nl);
 		nl.nl_family = AF_NETLINK_FAMILY;
@@ -717,7 +730,7 @@ static long getname_with_reverse(int nr, long a, long guest_addr_l,
 		memcpy(&kbuf, &nl, sizeof nl);
 		kern_len = (long)sizeof nl;
 	} else {
-		reverse_translate_unix_sockaddr(&kbuf, &kern_len);
+		reverse_translate_unix_sockaddr(&kbuf.un, &kern_len);
 	}
 
 	/* Copy back up to the guest's buffer cap (kernel truncates); write
