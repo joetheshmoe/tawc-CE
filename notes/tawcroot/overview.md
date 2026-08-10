@@ -202,9 +202,13 @@ foreclose future expansion.
 - **Not a full userland-namespace replacement.** We do fake the
   small root identity surface that TAWC already depends on from
   proot's `-0`: `getuid`/`geteuid`/`getgid`/`getegid` report 0,
-  `stat`-family results are decorated to look root-owned where
-  appropriate, and ownership-changing syscalls are treated as
-  compatibility operations rather than real privilege changes. We
+  `SO_PEERCRED` reports same-uid unix-socket peers as root (so
+  peer-cred-authenticating servers like tmux/dbus accept guest
+  clients; `SCM_CREDENTIALS` is deliberately not rewritten — see
+  the handler comment in `syscalls_socket.c`), `stat`-family
+  results are decorated to look root-owned where appropriate, and
+  ownership-changing syscalls are treated as compatibility
+  operations rather than real privilege changes. We
   do **not** provide pid namespaces, mount namespaces, user
   namespace semantics, or a general-purpose privilege model.
 - **Not a 32-bit emulator.** Android lp32 is being phased out and

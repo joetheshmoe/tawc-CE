@@ -72,6 +72,8 @@
 #define AF_UNIX_FAMILY  1
 #define AF_NETLINK_FAMILY  16
 #define NETLINK_AUDIT_PROTO 9
+#define SOL_SOCKET_LEVEL 1
+#define SO_PEERCRED_OPT 17
 
 /* sockaddr_un layout, mirrored locally to avoid pulling <sys/un.h>:
  *   uint16_t sun_family;
@@ -621,6 +623,75 @@ static long handle_accept4(const tawcroot_syscall_args *args, ucontext_t *uc)
 				    args->b, args->c, args->d);
 }
 
+/* struct ucred mirror (SO_PEERCRED out-value): pid, uid, gid — three
+ * 32-bit words. */
+struct tawc_ucred {
+	int32_t  pid;
+	uint32_t uid;
+	uint32_t gid;
+};
+_Static_assert(sizeof(struct tawc_ucred) == 12, "ucred ABI is 3 words");
+
+/* getsockopt(SOL_SOCKET, SO_PEERCRED) hands back KERNEL credentials,
+ * bypassing the virtual identity: server getuid() says 0 but the peer
+ * shows the real app uid, so any peer-cred-authenticating server (tmux,
+ * dbus-daemon, gpg-agent-style socket auth) rejects every guest client
+ * (issue: tmux-so-peercred-real-uid-breaks-peer-cred-check). A peer
+ * whose kernel uid is our own real uid IS a guest process, and the
+ * guest identity every process starts with is virtual root — so report
+ * uid/gid 0 for it, keeping the pid real. A guest that virtually
+ * setuid'd away from root still shows 0 (its per-process shadow is
+ * unreachable from here) — same bounded stance as the rest of the
+ * identity model.
+ *
+ * SCM_CREDENTIALS ancillary data is NOT given the same treatment: that
+ * would mean trapping recvmsg, which the header comment above rules out
+ * (hottest receive syscall; every Wayland/X11/dbus message). No known
+ * workload authenticates that way; revisit if one does.
+ *
+ * Everything that isn't SO_PEERCRED forwards verbatim. The rewrite path
+ * mirrors getname_with_reverse: issue the syscall into a local buffer,
+ * edit, copy back honoring the guest's cap (the kernel clamps
+ * SO_PEERCRED to min(optlen, sizeof ucred) and reports the clamped
+ * length — issuing with our own clamped local length reproduces that). */
+static long handle_getsockopt(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	void *guest_val  = (void *)(uintptr_t)args->d;
+	void *guest_lenp = (void *)(uintptr_t)args->e;
+	if ((int)args->b != SOL_SOCKET_LEVEL ||
+	    (int)args->c != SO_PEERCRED_OPT || !guest_val || !guest_lenp) {
+		return TAWC_RAW(TAWC_SYS_getsockopt, args->a, args->b,
+				args->c, args->d, args->e, 0);
+	}
+
+	uint32_t guest_cap;
+	long e = tawc_copy_from_guest(&guest_cap, sizeof guest_cap, guest_lenp);
+	if (e < 0) return TAWC_EFAULT;
+	if ((int32_t)guest_cap < 0) return TAWC_EINVAL;  /* kernel order */
+
+	struct tawc_ucred cred = { 0 };
+	uint32_t klen = guest_cap < sizeof cred ? guest_cap
+					        : (uint32_t)sizeof cred;
+	long rv = TAWC_RAW(TAWC_SYS_getsockopt, args->a, args->b, args->c,
+			   (long)&cred, (long)&klen, 0);
+	if (rv < 0) return rv;
+
+	uint32_t real_uid = (uint32_t)tawc_getuid();
+	if (klen >= 8 && cred.uid == real_uid) {
+		cred.uid = 0;
+		if (klen >= sizeof cred) cred.gid = 0;
+	}
+
+	if (klen > 0) {
+		long ce = tawc_copy_to_guest(guest_val, &cred, klen);
+		if (ce < 0) return TAWC_EFAULT;
+	}
+	long le = tawc_copy_to_guest(guest_lenp, &klen, sizeof klen);
+	if (le < 0) return TAWC_EFAULT;
+	return rv;
+}
+
 /* socket(AF_NETLINK, *, NETLINK_AUDIT) is denied by Android's SELinux
  * app policy with EACCES. libaudit consumers (Debian libpam, sshd built
  * with --with-linux-audit) only tolerate EINVAL/EPROTONOSUPPORT/
@@ -651,4 +722,5 @@ void tawcroot_socket_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_sendmsg,     handle_sendmsg);
 	tawcroot_dispatch_install(TAWC_SYS_getsockname, handle_getsockname);
 	tawcroot_dispatch_install(TAWC_SYS_getpeername, handle_getpeername);
+	tawcroot_dispatch_install(TAWC_SYS_getsockopt,  handle_getsockopt);
 }

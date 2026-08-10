@@ -18,6 +18,7 @@
 
 #include <cleat/test.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -249,6 +250,71 @@ test(hosted_unix_bind_leaf_too_long_enametoolong)
 	test_int_eq(th_bind(test_ctx, fd, guest), TAWC_ENAMETOOLONG);
 
 	test_int_eq(close(fd), 0);
+	th_teardown(&v);
+}
+
+/* ----- SO_PEERCRED virtualization ---------------------------------- */
+
+/* Local ucred mirror; <sys/socket.h>'s struct ucred needs _GNU_SOURCE. */
+struct test_ucred {
+	int32_t  pid;
+	uint32_t uid;
+	uint32_t gid;
+};
+
+/* A peer with our own real uid is a guest process and must be reported
+ * as virtual root (issue: tmux-so-peercred-real-uid-breaks-peer-cred-
+ * check). socketpair peers carry the creating process's creds, so this
+ * runs everywhere — no socket file, no SELinux gating. */
+test(hosted_so_peercred_reports_virtual_root)
+{
+	th_view v;
+	th_setup(&v, "sock-cred");
+
+	int sv[2];
+	test_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+
+	struct test_ucred cred;
+	memset(&cred, 0xff, sizeof cred);
+	unsigned int len = sizeof cred;
+	test_int_eq(th_sys(TAWC_SYS_getsockopt, sv[0], SOL_SOCKET,
+			   SO_PEERCRED, &cred, &len, 0), 0);
+	test_int_eq(len, sizeof cred);
+	test_int_eq(cred.uid, 0);
+	test_int_eq(cred.gid, 0);
+	test_int_eq(cred.pid, getpid());  /* pid stays real */
+
+	/* Oversized cap clamps to sizeof ucred like the kernel. */
+	unsigned int big = 64;
+	test_int_eq(th_sys(TAWC_SYS_getsockopt, sv[0], SOL_SOCKET,
+			   SO_PEERCRED, &cred, &big, 0), 0);
+	test_int_eq(big, sizeof cred);
+	test_int_eq(cred.uid, 0);
+
+	/* Truncated cap: kernel copies just that many bytes and reports
+	 * the truncated length; uid (bytes 4..8) still rewritten. */
+	memset(&cred, 0xff, sizeof cred);
+	unsigned int trunc = 8;
+	test_int_eq(th_sys(TAWC_SYS_getsockopt, sv[0], SOL_SOCKET,
+			   SO_PEERCRED, &cred, &trunc, 0), 0);
+	test_int_eq(trunc, 8);
+	test_int_eq(cred.uid, 0);
+	test_int_eq(cred.gid, 0xffffffff);  /* beyond len: untouched */
+
+	/* Negative optlen is EINVAL before any kernel call. */
+	unsigned int neg = 0xffffffffu;
+	test_int_eq(th_sys(TAWC_SYS_getsockopt, sv[0], SOL_SOCKET,
+			   SO_PEERCRED, &cred, &neg, 0), TAWC_EINVAL);
+
+	/* Non-PEERCRED options forward untouched. */
+	int type = -1;
+	unsigned int tlen = sizeof type;
+	test_int_eq(th_sys(TAWC_SYS_getsockopt, sv[0], SOL_SOCKET,
+			   SO_TYPE, &type, &tlen, 0), 0);
+	test_int_eq(type, SOCK_STREAM);
+
+	test_int_eq(close(sv[0]), 0);
+	test_int_eq(close(sv[1]), 0);
 	th_teardown(&v);
 }
 
