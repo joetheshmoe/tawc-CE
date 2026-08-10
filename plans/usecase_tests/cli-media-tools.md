@@ -43,6 +43,13 @@ Work under `/root/usecase-media/`.
 - Anything audio-related is out of scope — no audio bridge exists yet
   (plans/audio.md). ffmpeg *file-to-file* audio streams (testsrc with
   sine audio) should still encode fine since no device is touched.
+- ImageMagick default/fontconfig-family font lookup is broken in the
+  Arch aarch64 package itself (7.1.2-26; not a tawc bug — `pango:` proves
+  in-process fontconfig+freetype works). Bare `-annotate`, `label:`,
+  `caption:`, and montage auto-labels fail with ``unable to read font
+  ` (invalid stream operation)'``. Workarounds all render fine: explicit
+  `-font /usr/share/fonts/...` file path, a `type.xml` name like
+  `-font DejaVu-Sans`, or the `pango:` coder. Not a test failure.
 
 ## Cleanup
 
@@ -51,8 +58,9 @@ if installed).
 
 ## Run log (2026-07-13, physical OnePlus 50f4ca18, Arch tawcroot)
 
-Outcome: PROBLEMS (one finding). ffmpeg + all non-text ImageMagick
-operations pass; ImageMagick's default/fontconfig text rendering fails.
+Outcome: PASS (with upstream caveat, see Known issues). ffmpeg + all
+non-text ImageMagick operations pass; ImageMagick's default/fontconfig
+text rendering fails due to a distro/upstream ImageMagick quirk.
 
 - Setup: ImageMagick installed via cache proxy (imagemagick + liblqr +
   libraqm, small pull). ffmpeg n8.1.2 was already present in the guest.
@@ -67,8 +75,8 @@ operations pass; ImageMagick's default/fontconfig text rendering fails.
   `type.xml`-named `-font DejaVu-Sans`, and the `pango:` coder all render
   fine — and `pango:` proves in-process fontconfig+freetype works, so it
   is NOT a tawcroot syscall problem. Attributed to upstream/distro
-  ImageMagick (aarch64 7.1.2-26). See
-  issues/usecase_tests/imagemagick-default-font-resolution-fails-invalid-stream-operation.md
+  ImageMagick (aarch64 7.1.2-26); recorded as a caveat above, not a tawc
+  issue.
 - ffmpeg: synth testsrc 5s 640x360 H.264 (0.48s); transcode VP9/webm
   (3.9s, multi-threaded over 7 cores, 1.33x, not pathological); extract 3
   PNG frames; `ffprobe` confirms h264/vp9 640x360 dur 5.0 on both. No
