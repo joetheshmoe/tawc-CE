@@ -372,6 +372,16 @@ to per-distro sockets with more protocol); and a global toggle in
 - Client exit codes: child's code verbatim (128+sig for signal
   deaths); 127 = broker not reachable or command not found; 126 =
   spawn failure; 125 = usage/protocol errors.
+- **`am`/`cmd <service>` shell interfaces are root/shell-only.** Most
+  system services (ActivityManagerService included) accept their binder
+  shell-command transaction only from uid 0 or 2000 (shell). An app-uid
+  caller is rejected before any command parsing, and the refusal is just
+  a -1 result code with nothing written to the caller's fds — so
+  `ando am start …` exits 255 with no output and no logcat. (`cmd -l`
+  and e.g. `cmd package list packages` still work; the gate is
+  per-service.) On rooted devices `ando -r am …` passes the gate.
+  Unrooted fix planned: an in-app termux-am-style `am` intercepted by
+  the broker (plans/ando-am.md).
 - **chroot: ando has never actually worked.** Chroot guests run as
   real root (`su` → `unshare -m` → chroot), and the broker's peercred
   gate rejects any uid != app uid — including 0. This predates the

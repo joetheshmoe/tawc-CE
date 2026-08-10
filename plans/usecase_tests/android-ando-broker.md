@@ -20,7 +20,9 @@ reporting rules.
   identical failure as app uid outside ando via the debug broker, so
   not an ando bug. `ando -r am start …` (rooted phone) worked and
   Firefox came foreground with example.com (screenshot-verified).
-- Issue: [issues/usecase_tests/ando-am-start-app-uid-blocked.md](../../issues/usecase_tests/ando-am-start-app-uid-blocked.md).
+- Outcome: platform limit, now documented in notes/ando.md ("Semantics
+  and known limits"); unrooted fix planned in
+  [plans/ando-am.md](../ando-am.md).
 - Cleanup done: ando disabled, screenshots deleted (device + host),
   device returned to home screen, nothing installed or left behind.
 
@@ -42,15 +44,19 @@ fail-closed.
 2. Enable via the broker (in-memory override, self-cleaning on app
    death): `scripts/tawc-exec.sh --action set-ando --arg installId=<id> --arg enabled=true`.
 3. `ando getprop ro.build.version.release` — prints the Android version.
-4. `ando -s 'id; echo $USER'` — runs as the app uid outside the rootfs
-   env (contrast with `id` inside the rootfs, which reports fake root).
-5. Open a URL: `ando am start -a android.intent.action.VIEW -d https://example.com`
-   — verify with a screenshot that an Android browser came to the
-   foreground with the page (per README step 8). If the device has no
-   browser, `-d https://` handling failing is a device gap; substitute
-   `ando am start -a android.intent.action.VIEW -d about:blank` reasoning
-   or open Settings (`ando am start -a android.settings.SETTINGS`) and
-   note the substitution.
+4. `ando /system/bin/sh -c 'id; echo $USER'` — runs as the app uid
+   outside the rootfs env (contrast with `id` inside the rootfs, which
+   reports fake root). Do **not** use `ando -s '…'` for this: `-s` does
+   the sudo-style join, which escapes the `;` (notes/ando.md).
+5. Open a URL: `ando am start -a android.intent.action.VIEW -d https://example.com`.
+   **Known limit:** on unrooted devices this exits 255 silently —
+   Android's `am`/`cmd activity` shell interface is root/shell-only
+   (notes/ando.md "Semantics and known limits"); record it as such, not
+   as a new failure. On a rooted device, verify the equivalent
+   `ando -r am start …` instead: screenshot that an Android browser came
+   to the foreground with the page (per README step 8). Once
+   plans/ando-am.md ships, unrooted `ando am start` is expected to work
+   and this step should be rewritten to test it.
 6. Pipe integration: `ando getprop | grep ro.product` from inside the
    rootfs — stdio plumbing through the broker should behave like a
    normal pipe.
@@ -59,7 +65,9 @@ fail-closed.
 ## Expected results
 
 - Disabled → clean refusal; enabled → all commands work with correct
-  stdio/exit codes; URL/intent launch brings the target app forward.
+  stdio/exit codes; URL/intent launch brings the target app forward on
+  rooted devices (`-r`), and fails with the documented silent 255 on
+  unrooted ones until plans/ando-am.md ships.
 
 ## Known issues / caveats
 
