@@ -264,7 +264,17 @@ class InstallationStore(context: Context) {
         // death discards it. Empty (no override) in production.
         private val andoOverrides = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
-        /** Test hook: force [andoEnabled] for [id] regardless of metadata. */
+        /**
+         * Test hook: force [andoEnabled] for [id] regardless of
+         * metadata. **Never call this from production code.** The
+         * override wins over the persisted [Installation.andoEnabled],
+         * so a production caller would silently grant ando to a distro
+         * the user turned off — and the [DistroInfoActivity] checkbox
+         * (which renders the metadata value) would keep showing it as
+         * disabled. The only legitimate caller is the debug-only
+         * `set-ando` broker action, which is registered exclusively
+         * under `BuildConfig.DEBUG`.
+         */
         fun setAndoOverride(id: String, enabled: Boolean) {
             andoOverrides[id] = enabled
         }

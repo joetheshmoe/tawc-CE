@@ -201,20 +201,27 @@ object Archive {
         stripPrefix: String?,
         onLine: (String) -> Unit,
     ) {
+        // Every interpolated path goes through [Sh.quote] — same as
+        // RootfsCleaner's scripts. Inputs are app-derived today (a
+        // regex-validated install id, a hardcoded distro strip prefix),
+        // but this script runs as root, so the quoting shouldn't depend
+        // on that staying true.
+        val qDest = Sh.quote(destDir)
+        val qPrefixed = stripPrefix?.let { Sh.quote("$destDir/$it") }
         val script = buildString {
-            appendLine("mkdir -p '$destDir'")
+            appendLine("mkdir -p $qDest")
             // -z is autodetected by toybox tar when the file's first
             // bytes look like gzip; we don't need to spell it out.
-            appendLine("tar -xf '$tarPath' -C '$destDir'")
-            if (stripPrefix != null) {
-                appendLine("if [ -d '$destDir/$stripPrefix' ]; then")
-                appendLine("    cd '$destDir/$stripPrefix'")
+            appendLine("tar -xf ${Sh.quote(tarPath)} -C $qDest")
+            if (qPrefixed != null) {
+                appendLine("if [ -d $qPrefixed ]; then")
+                appendLine("    cd $qPrefixed")
                 appendLine("    for entry in * .[!.]* ..?*; do")
                 appendLine("        [ -e \"\$entry\" ] || continue")
-                appendLine("        mv -- \"\$entry\" '$destDir/'")
+                appendLine("        mv -- \"\$entry\" ${Sh.quote("$destDir/")}")
                 appendLine("    done")
-                appendLine("    cd '$destDir'")
-                appendLine("    rmdir '$destDir/$stripPrefix'")
+                appendLine("    cd $qDest")
+                appendLine("    rmdir $qPrefixed")
                 appendLine("fi")
             }
             appendLine("echo OK")
