@@ -211,6 +211,13 @@ foreclose future expansion.
   operations rather than real privilege changes. We
   do **not** provide pid namespaces, mount namespaces, user
   namespace semantics, or a general-purpose privilege model.
+  In particular the guest's virtual root **does not bypass DAC** —
+  the kernel still sees the app uid, so a mode the app can't write
+  blocks "root" too. Concretely: the Arch Linux ARM bootstrap ships
+  `/` as mode 0555, so `touch /foo` fails with EACCES inside an Arch
+  guest despite `id` reporting uid 0 (`chmod 755 /` fixes it; Debian
+  sid's `/` is 0700 and writable). That's a distro-tarball property,
+  not a tawcroot bug — don't go looking for a missing handler.
 - **Not a 32-bit emulator.** Android lp32 is being phased out and
   our distros are lp64 only. The seccomp filter `KILL_PROCESS`es
   any 32-bit personality syscall as defense-in-depth.

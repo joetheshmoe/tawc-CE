@@ -6,6 +6,7 @@ design, build, and operational notes in [`../notes/`](../notes/).
 - [usecase_tests/](usecase_tests/README.md) - one-shot agent-run usecase test plans; see that README for the procedure.
 - [ando-am.md](ando-am.md) - termux-am-style in-app `am` behind broker interception of `ando am`, so unrooted guests can launch activities/broadcasts/services.
 - [audio.md](audio.md) - planned PipeWire/PulseAudio bridge to Android audio.
+- [compositor-output-at-startup.md](compositor-output-at-startup.md) - advertise `wl_output` at compositor start instead of at the first Activity surface, so clients that need a display at init (all of SDL, Xwayland's root window) don't die on a cold compositor.
 - [gfxstream-bridge-remaining-work.md](gfxstream-bridge-remaining-work.md) - remaining GL/GLES and x86_64 AVD work for the gfxstream bridge backend.
 - [gl-on-gles-translator.md](gl-on-gles-translator.md) - possible in-house GL 3.3-core-on-ES 3.2 translator (glslang/SPIRV-Cross shader pipeline) for the modern-GL gap zink can't cover on Vulkan 1.1 devices.
 - [tawcroot-default-binds-ro.md](tawcroot-default-binds-ro.md) - make tawcroot's built-in binds read-only where the guest never writes (system partitions; app-asset copy→bind revert).

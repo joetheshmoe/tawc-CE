@@ -37,12 +37,13 @@ single-test runs hit a cold compositor and failed; the full integration
 suite passed both SuperTuxKart tests because earlier tests had left
 windows open. Nothing about it is random.
 
-Fix direction: advertise the output at startup from the Android display
-metrics (which the app knows before any Activity surface exists) and let
-the existing `sync_primary_output_to_host` correct the mode when the
-first host registers. Waiting for real surface dimensions is the current
-design's reason for the delay, so this needs a deliberate decision about
-what to publish in the meantime, not just a reorder.
+Fix planned in
+[plans/compositor-output-at-startup.md](../../plans/compositor-output-at-startup.md):
+advertise the output at startup from the Android display metrics, and
+let the existing `sync_primary_output_to_host` correct the mode when the
+first host registers. Advertising an output and deferring toplevel
+configures turn out to be separable, so no client gets configured off a
+guess.
 
 ## Blocker 2 — `SDL_CreateWindow(SDL_WINDOW_OPENGL)` fails EGL config selection
 
@@ -71,9 +72,43 @@ SuperTuxKart is unaffected and renders fine, because Irrlicht manages
 its own EGL context rather than asking SDL for a GL window — which is
 why STK is not a canary for this.
 
-Next step: dump the attribute list SDL passes (SDL3's
-`SDL_EGL_ChooseConfig`) and diff it against what
-`deps/libhybris`'s EGL accepts.
+### Ruled out: the ordinary attribute set, and the EGL version
+
+Probed the EGL the guest actually gets (`HYBRIS_EGLPLATFORM=wayland`,
+`libEGL.so.1` driven from python ctypes):
+
+    eglInitialize   -> 1.5
+    EGL_VERSION      "1.5 Android META-EGL"     EGL_VENDOR "Android"
+    47 extensions, including EGL_EXT_pixel_format_float
+
+and every attribute SDL would plausibly pass is **accepted** by
+`eglChooseConfig` on that display — `EGL_RED/GREEN/BLUE/ALPHA_SIZE`,
+`EGL_BUFFER_SIZE`, `EGL_DEPTH_SIZE`, `EGL_STENCIL_SIZE`,
+`EGL_SURFACE_TYPE`, `EGL_RENDERABLE_TYPE`, `EGL_CONFORMANT`,
+`EGL_SAMPLE_BUFFERS`/`EGL_SAMPLES`, `EGL_MIN_SWAP_INTERVAL`, and
+`EGL_COLOR_COMPONENT_TYPE_EXT` (the extension is present). All returned
+`EGL_SUCCESS` with a non-empty config list.
+
+So the cause is **not** an obviously-unsupported token on this display,
+which leaves two candidates:
+
+1. SDL passes something outside that set, or
+2. SDL is not on this display at all. Its Wayland backend uses
+   `eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, wl_display, …)`,
+   which is a different entry point into the fork than the
+   `HYBRIS_EGLPLATFORM=wayland` default display probed above — and a
+   platform path that advertises 1.5 while implementing 1.4 semantics
+   would produce exactly this.
+
+Next step, and do this rather than guessing further: an `LD_PRELOAD`
+interposer on `eglGetPlatformDisplay` + `eglChooseConfig` that logs the
+display handle and dumps the attribute list, run against doomretro. It
+needs `base-devel` in the guest (~5 min, see the cli-c-toolchain notes
+in plans/usecase_tests/README.md). That separates the two candidates in
+one run and hands you the exact token. The fix then lands either as a
+`deps/libhybris` fork patch (a token it rejects but Android's driver
+accepts) or as a truthfulness fix in the fork's platform-display
+version reporting.
 
 ## Repro
 

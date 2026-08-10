@@ -64,7 +64,12 @@ explicit user request.
 - URL format: `http://127.0.0.1:8080/proxy/<scheme>/<host>/<path>`.
   nginx rewrites that to `<scheme>://<host>/<path>` upstream and
   caches the response keyed by the upstream URL (without query
-  string — see below).
+  string — see below). Note the `://` is **split** into `/`:
+  `.../proxy/https/github.com/foo`, not `.../proxy/https://github.com/foo`.
+  Appending a raw URL is the easy mistake and 404s — which reads like
+  the proxy refusing the upstream rather than a malformed request. For
+  a hand-rolled fetch also pass `curl -L`, since the redirect bounce
+  back through the proxy is what makes GitHub release assets work.
 - The proxy has **no mirror list of its own** — the upstream URL is
   encoded in every request, so the same proxy handles all distros and
   any mirror. Single source of truth for mirrors stays in our existing

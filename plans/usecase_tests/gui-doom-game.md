@@ -65,9 +65,12 @@ finds only `doomretro`). The plan's chocolate/prboom substitutes do not
 exist here. Substituted `doomretro` (SDL2 engine) + a freedoom1.wad v0.13.0
 to still exercise the SDL → Wayland → libhybris path. (A real user following
 this usecase on Arch ARM would hit the missing-package wall immediately — a
-doom-specific packaging gap, not a tawc bug. Note the GitHub release URL
-does not work through the cache proxy, which does not follow the 302 to
-`release-assets.githubusercontent.com`; fetch the WAD directly.)
+doom-specific packaging gap, not a tawc bug. Fetch the WAD through the
+cache proxy, minding the URL form — it is
+`/proxy/<scheme>/<host>/<path>`, i.e. `.../proxy/https/github.com/...`
+with the `://` split, not the raw URL appended. With `curl -L` the proxy
+follows GitHub's 302 back through itself and serves the asset;
+notes/cache-proxy.md has the details.)
 
 Outcome: doomretro fails SDL video init 100% of the time (`SDL_GetNumVideoDisplays
 ... "Video subsystem has not been initialized"`), under both
