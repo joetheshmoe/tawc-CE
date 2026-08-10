@@ -72,6 +72,28 @@ int tawcroot_is_proc_fd_link(const char *path);
  * shadow classifiers above so two matchers can't disagree. */
 size_t tawcroot_proc_magic_link_prefix(const char *suf);
 
+/* Same match, plus which containment rule the link falls under (see
+ * contain_proc_magic_link / rewrite_own_root in path.c):
+ *
+ *   FD_OWN    our own fd/<n> or map_files/<e>. NOT contained: the guest
+ *             already holds that fd, so the link grants nothing new —
+ *             the same line dirfd resolution draws for out-of-view
+ *             dirfds. Also what keeps /dev/stdin and /dev/fd/<n> (pipes,
+ *             sockets, process substitution) working.
+ *   ROOT_OWN  our own root. The kernel resolves it to the HOST root
+ *             (tawcroot never chroots), where a real chroot would give
+ *             the guest's root — so it is rewritten, not refused.
+ *   CONTAIN   everything else (cwd, any other process's link): resolve
+ *             through the kernel, then require the target to be in view.
+ *
+ * Costs one /proc/<n>/status read for a numeric pid that isn't ours,
+ * and only after the grammar has matched. */
+#define TAWCROOT_PROC_MAGIC_NONE      0
+#define TAWCROOT_PROC_MAGIC_FD_OWN    1
+#define TAWCROOT_PROC_MAGIC_ROOT_OWN  2
+#define TAWCROOT_PROC_MAGIC_CONTAIN   3
+size_t tawcroot_proc_magic_link_classify(const char *suf, int *kind);
+
 /* Fast-out for fd-relative opens: can this relative leaf even compose
  * into a /proc path we shadow? Cheap first-byte test that skips the
  * readlinkat for the vast majority of fd-relative opens. */

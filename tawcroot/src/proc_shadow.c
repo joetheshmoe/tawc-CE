@@ -160,6 +160,13 @@ static const char *strip_proc_pid_prefix(const char *path, long *tid_out)
 	return strip_pid_prefix_rel(path + 6, tid_out);
 }
 
+/* Resolve a strip_proc_pid_prefix tid to "names our process". -1
+ * ("self") is ours by definition; numeric tids pay the status read. */
+static int resolve_mine(long tid)
+{
+	return tid < 0 ? 1 : is_my_tid(tid);
+}
+
 /* Byte length of the dir/entry MAGIC LINK prefix in a /proc-relative
  * suffix (no leading "/proc/") — the shapes where a syscall acts on the
  * host inode the link names (or resolves through) rather than on a
@@ -172,9 +179,16 @@ static const char *strip_proc_pid_prefix(const char *path, long *tid_out)
  * also right when the path resolves THROUGH the link, e.g.
  * self/fd/3/sub or self/cwd/name). 0 = no match. Lives here, sharing
  * strip_pid_prefix_rel, so the grammar can't drift from the shadow
- * classifiers' (an earlier copy in syscalls_fs.c missed task/<tid>/). */
-size_t tawcroot_proc_magic_link_prefix(const char *suf)
+ * classifiers' (an earlier copy in syscalls_fs.c missed task/<tid>/).
+ *
+ * `kind` (optional) reports which containment rule the link falls
+ * under — see the TAWCROOT_PROC_MAGIC_* comments in proc_shadow.h.
+ * Ownership is resolved (one /proc/<n>/status read for a numeric pid
+ * that isn't ours) only when the caller asks for a kind AND the grammar
+ * already matched, so the prefix-only callers pay nothing. */
+static size_t magic_link_prefix(const char *suf, int *kind)
 {
+	if (kind) *kind = TAWCROOT_PROC_MAGIC_NONE;
 	long tid;
 	const char *tail = strip_pid_prefix_rel(suf, &tid);
 	if (!tail) return 0;
@@ -185,23 +199,34 @@ size_t tawcroot_proc_magic_link_prefix(const char *suf)
 		p = tail + 10;
 	} else if (tail[0] == 'c' && tail[1] == 'w' && tail[2] == 'd' &&
 		   (tail[3] == 0 || tail[3] == '/')) {
+		if (kind) *kind = TAWCROOT_PROC_MAGIC_CONTAIN;
 		return (size_t)(tail + 3 - suf);
 	} else if (tail[0] == 'r' && tail[1] == 'o' && tail[2] == 'o' &&
 		   tail[3] == 't' && (tail[4] == 0 || tail[4] == '/')) {
+		if (kind)
+			*kind = resolve_mine(tid) ? TAWCROOT_PROC_MAGIC_ROOT_OWN
+						  : TAWCROOT_PROC_MAGIC_CONTAIN;
 		return (size_t)(tail + 4 - suf);
 	} else {
 		return 0;
 	}
 	const char *start = p;
 	while (*p && *p != '/') p++;
-	return p == start ? 0 : (size_t)(p - suf);
+	if (p == start) return 0;
+	if (kind)
+		*kind = resolve_mine(tid) ? TAWCROOT_PROC_MAGIC_FD_OWN
+					  : TAWCROOT_PROC_MAGIC_CONTAIN;
+	return (size_t)(p - suf);
 }
 
-/* Resolve a strip_proc_pid_prefix tid to "names our process". -1
- * ("self") is ours by definition; numeric tids pay the status read. */
-static int resolve_mine(long tid)
+size_t tawcroot_proc_magic_link_prefix(const char *suf)
 {
-	return tid < 0 ? 1 : is_my_tid(tid);
+	return magic_link_prefix(suf, 0);
+}
+
+size_t tawcroot_proc_magic_link_classify(const char *suf, int *kind)
+{
+	return magic_link_prefix(suf, kind);
 }
 
 /* Compose `dirfd`'s host path (resolved via /proc/self/fd/<n>) with a

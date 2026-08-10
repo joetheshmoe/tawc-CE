@@ -401,11 +401,24 @@ covered by unit/hosted/smoke tests.)
 - **Deep paths cap at 256 components** (-ENAMETOOLONG from the fold);
   the kernel accepts ~2040 single-byte components in its 4096-byte
   limit. No real layout comes close to 256.
+- **`/proc` magic links are contained, which diverges from the
+  kernel in two directions.** Resolving *through* a link — `root`,
+  `cwd`, and any other process's `fd`/`map_files` — to a target
+  outside the view is `-ENOENT` where the kernel would hand over the
+  host inode; and our own `root` link resolves to the *guest's* root
+  (what a real chroot answers) rather than the host root the kernel
+  would give a process that never chrooted. Both are deliberate: see
+  notes/tawcroot/path-translation.md §"`/proc` magic-link
+  containment" for the rules, the own-fd carve-out, and the residues.
+  This is the `..`-fold containment argument above finally being
+  sufficient rather than merely true.
 - **Cross-process `/proc/<pid>/*` is not reverse-translated.** Only
   the calling process's own /proc views get shadow/synthesis
   treatment; another guest process's maps/cwd/exe/fd show host paths
-  verbatim. Same-uid processes can already read each other's /proc
-  wholesale, so this leaks nothing the kernel doesn't. Includes
+  verbatim (*reading* the links, that is — resolving through them is
+  contained, per the entry above). Same-uid processes can already
+  read each other's /proc wholesale, so this leaks nothing the kernel
+  doesn't. Includes
   `/proc/<pid>/root` of an emulated-chroot'd guest, which an outside
   observer sees as "/" where a real kernel would show the chroot dir.
   Cross-process `comm`/`cmdline`/`environ` ARE kernel-truthful since

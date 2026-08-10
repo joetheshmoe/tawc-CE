@@ -723,6 +723,87 @@ a small info leak.
 function (`tawcroot_cwd_to_guest_abs`), including the -ENOENT
 outside-view stance, so the two surfaces can't drift apart.
 
+### `/proc` magic-link containment
+
+`/proc` is bound RW into every rootfs, and a path matching a bind
+takes the early return in `tawcroot_path_translate_with_ctx` ("Bind
+first … skip memo and resolver"), so the suffix reaches the kernel
+with no symlink resolution at all. The kernel then resolves
+`/proc/<pid>/root` to the real **host** root — tawcroot never
+`chroot`s — and the guest lands anywhere on the host fs, read and
+write. `cwd`, `fd/<n>` and `map_files/<n>` are the same shape. No
+exploit and no resolver bug: an ordinary `open()` through a supported
+bind. `..` isn't involved either — the fold collapses it before
+translation, which is exactly why the fold's containment argument was
+true and not sufficient.
+
+Two mechanisms in `tawcroot_path_translate` (path.c) close it, keyed
+off `tawcroot_proc_magic_link_classify` (proc_shadow.c), which shares
+the pid/`task/<tid>/` grammar with the shadow classifiers:
+
+- **Own root is rewritten, not refused.** `/proc/self/root/X` means
+  `/X` to a chroot'd process, so the remainder is re-translated
+  against the current root view — which is both kernel-faithful and
+  in-view by construction. A bounded loop (each pass strictly
+  shortens the path, so nesting unwinds); exhausting the bound is
+  `-ELOOP`, never a fall-through to the kernel. `chroot(2)`
+  emulation composes: the rewrite targets whatever the current root
+  is.
+- **Everything else resolves, then contains.** `readlink` exactly
+  the link prefix, join the resolve-through remainder,
+  `tawcroot_host_path_to_guest_abs` the result; out of view is
+  `-ENOENT` — what the guest should believe about a path its world
+  doesn't contain. A target that isn't an absolute path
+  (`pipe:[…]`, `socket:[…]`, `anon_inode:…`) is nothing to contain
+  and passes; so does an unreadable link, which keeps the kernel's
+  own errno.
+
+Both only fire when the operation acts on what the link *points at*:
+the path resolves through the link, or the mode follows the leaf.
+`readlink`/`lstat` of a bare link stay kernel-faithful — `readlink
+/proc/self/root` still answers `/`, which is what a chroot'd process
+sees.
+
+**Our own `fd/<n>` and `map_files/<n>` are deliberately exempt.** The
+guest already holds that fd, so the link grants nothing new — the
+same line `translate_local` draws when it lets an out-of-view dirfd
+fall through to kernel resolution ("there's nothing in our view to
+escape into"). It is also what keeps `/dev/stdin`, `/dev/fd/<n>` and
+process substitution working. Another process's fd links are *not*
+exempt: that capability isn't ours.
+
+Residues, all deliberate:
+
+- **An in-view host path stays reachable through a link.** The rule
+  is "can the guest name this?", and e.g. the rootfs's own host path
+  names guest `/`-relative files. It is an alias for an inode the
+  guest already has, not an escape (`..` can't extend it — the fold
+  runs first). Read-only binds still hold: the RO stage-2 check
+  (§"Read-only binds") runs on the same joined host path.
+- **Cross-process `/proc/<pid>/*` reads are unchanged** — bare-link
+  `readlink` still answers verbatim, per the standing stance in
+  notes/tawcroot/status.md §"Known gaps".
+- Containment costs one `readlink` per magic-link-prefixed path under
+  the `/proc` bind. Those are rare outside `self/fd/<n>`, which is
+  exempt, so the hot path is untouched.
+
+Same stance as the rest of tawcroot: this is accident containment
+with kernel-shaped errors, not a security boundary (overview.md
+§"What it explicitly is not"). A guest that defeats the monitor
+in-process bypasses it exactly as it bypasses everything else; kernel
+enforcement is plans/tawcroot-landlock.md's territory. What it does
+restore is that the *documented* per-distro properties (notes/ando.md
+§"Per-distro gating", cross-distro data separation) are true of the
+monitor working as written.
+
+Tests: `hosted_proc_magic_link_classify`,
+`hosted_proc_self_root_routes_to_guest_root`,
+`hosted_proc_self_root_bare_link`,
+`hosted_proc_other_pid_root_contained`,
+`hosted_proc_cwd_link_contained`,
+`hosted_proc_own_fd_links_not_contained` in
+`tests/hosted/test_proc_chroot.c`.
+
 ### chroot emulation
 
 We don't have CAP_SYS_CHROOT inside the Android app sandbox, so
@@ -951,8 +1032,10 @@ Errno/fidelity notes:
 
 What this does NOT promise: it is accident containment with
 kernel-shaped errors, same stance as the rest of tawcroot ("not a
-security boundary", overview.md). In-process attacks, `/proc/<pid>/
-root` view escapes, and resolver escape bugs bypass it exactly as
-they bypass containment generally — kernel enforcement is
-plans/tawcroot-landlock.md's territory (grant RO srcs read/exec
-rights only, keyed off the same per-bind flag).
+security boundary", overview.md). In-process attacks and resolver
+escape bugs bypass it exactly as they bypass containment generally —
+kernel enforcement is plans/tawcroot-landlock.md's territory (grant
+RO srcs read/exec rights only, keyed off the same per-bind flag).
+`/proc` magic-link routes around it are handled: the same joined host
+path the containment check builds feeds
+`tawcroot_host_path_in_ro_bind` (§"`/proc` magic-link containment").

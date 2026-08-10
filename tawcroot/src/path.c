@@ -580,6 +580,80 @@ static long ro_check_proc_magic_link(tawcroot_path_mode mode,
 	return tawcroot_host_path_in_ro_bind(tgt, pos) ? TAWC_EROFS : 0;
 }
 
+/* Does a translation ACT ON what a magic link points at, rather than on
+ * the link itself? True when the path resolves THROUGH the link
+ * (self/root/etc/hostname) and, for a bare link, when the mode follows
+ * the leaf. NOFOLLOW / PARENT_* on a bare link target the link object —
+ * readlink and lstat stay kernel-faithful, and unlink/mkdir keep the
+ * kernel's own refusals. */
+static int magic_link_traversed(tawcroot_path_mode mode, const char *suffix,
+				size_t ml)
+{
+	return suffix[ml] != 0 || mode == TAWCROOT_PATH_FOLLOW;
+}
+
+/* Stage 2, containment: a /proc magic link is resolved by the KERNEL,
+ * which knows nothing about the guest's view. The bind lookup takes the
+ * early return in tawcroot_path_translate_with_ctx ("Bind first … skip
+ * memo and resolver"), so the suffix reaches the kernel with no symlink
+ * resolution at all — and `/proc/self/root` is the real HOST root
+ * (tawcroot never chroots). `cat /proc/1/root/etc/hostname` then reads
+ * the host's, and a write through the same shape lands on the host fs.
+ * No exploit, no resolver bug: an ordinary open through a supported
+ * bind.
+ *
+ * So: readlink exactly the link prefix, join the resolve-through
+ * remainder, and require the result to be somewhere the guest can name
+ * (tawcroot_host_path_to_guest_abs succeeds). Out of view → -ENOENT,
+ * which is what the guest should believe about a path its world doesn't
+ * contain. A target that isn't an absolute path at all ("pipe:[…]",
+ * "socket:[…]", "anon_inode:…") is nothing to contain — the kernel's own
+ * open of it is correct — so it passes.
+ *
+ * Not applied to our own fd/map_files links, and own-root is rewritten
+ * instead of refused; see TAWCROOT_PROC_MAGIC_* in proc_shadow.h.
+ *
+ * Cost: one readlink per magic-link-prefixed path under the /proc bind.
+ * Those are rare outside self/fd/<n>, which is exempt, so the hot path
+ * is untouched. `proc_bind` is the caller's already-computed
+ * fd_is_proc_bind(base_fd). */
+static long contain_proc_magic_link(tawcroot_path_mode mode, int proc_bind,
+				    int base_fd, const char *suffix)
+{
+	if (!proc_bind) return 0;
+	int kind;
+	size_t ml = tawcroot_proc_magic_link_classify(suffix, &kind);
+	if (ml == 0 || kind != TAWCROOT_PROC_MAGIC_CONTAIN) return 0;
+	if (!magic_link_traversed(mode, suffix, ml)) return 0;
+
+	char lnk[64];
+	if (ml >= sizeof lnk) return 0;
+	for (size_t i = 0; i < ml; i++) lnk[i] = suffix[i];
+	lnk[ml] = 0;
+
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *tgt = scratch->buf[0];
+	long ln = tawc_readlinkat(base_fd, lnk, tgt, TAWCROOT_PATH_SCRATCH_SIZE);
+	/* Unreadable link (gone, EACCES) or a non-path target: leave it to
+	 * the kernel. */
+	if (ln <= 0 || ln >= (long)TAWCROOT_PATH_SCRATCH_SIZE || tgt[0] != '/')
+		return 0;
+	size_t pos = (size_t)ln;
+	if (suffix[ml]) {
+		if (tgt[pos - 1] == '/') pos--;  /* a root link is "/" */
+		size_t joined = pos;
+		if (tawc_str_append(tgt, TAWCROOT_PATH_SCRATCH_SIZE, &joined,
+				    suffix + ml) == 0)
+			pos = joined;
+		/* Overlong join: judge the link target alone. */
+	}
+	char *guest = scratch->buf[1];
+	if (tawcroot_host_path_to_guest_abs(tgt, pos, guest,
+					    TAWCROOT_PATH_SCRATCH_SIZE) < 0)
+		return TAWC_ENOENT;
+	return 0;
+}
+
 /* Central-EROFS errno fidelity: for FOLLOW/NOFOLLOW leaf-must-exist
  * writes (chmod/chown/utimensat/truncate/setxattr/open-for-write/
  * access(W_OK)) the kernel looks the target up BEFORE mnt_want_write,
@@ -647,16 +721,58 @@ tawcroot_path_result tawcroot_path_translate(const char *guest_path,
 		.cwd_to_guest_abs = prod_cwd_to_guest_abs,
 		.cwd_ctx          = 0,
 	};
-	r = tawcroot_path_translate_with_ctx(
-		&ctx, guest_path, out_suffix, out_cap, mode, intent);
-	/* RO-bind impure companions (see block comment above). The
-	 * orchestrator's EROFS is the only error that reaches here with
-	 * (base_fd, out_suffix) valid — every earlier error returns
-	 * before the central check populates them. */
+	/* Own-root rewrite. `/proc/self/root/X` means `/X` to a chroot'd
+	 * process; we never chroot, so the kernel would hand the guest the
+	 * HOST root. Re-drive translation on the remainder against the
+	 * current root view instead, which is both what a real chroot
+	 * answers and inside the view by construction. Cold: the loop body
+	 * only runs for a path that actually names our own root link, and
+	 * each pass strictly shortens the path (nesting like
+	 * /proc/self/root/proc/self/root/x unwinds one link per pass), so
+	 * the hop bound is a backstop, not a policy. Exhausting it must
+	 * NOT fall through to the kernel — that is the escape. */
+	struct tawcroot_path_scratch *rw = 0;
+	const char *path = guest_path;
+	int proc_bind = 0;
+	for (int hop = 0; ; hop++) {
+		r = tawcroot_path_translate_with_ctx(
+			&ctx, path, out_suffix, out_cap, mode, intent);
+		if (r.err) break;
+		proc_bind = fd_is_proc_bind(r.base_fd);
+		if (!proc_bind) break;
+		int kind;
+		size_t ml = tawcroot_proc_magic_link_classify(out_suffix, &kind);
+		if (ml == 0 || kind != TAWCROOT_PROC_MAGIC_ROOT_OWN) break;
+		if (!magic_link_traversed(mode, out_suffix, ml)) break;
+		if (hop >= 8) { r.err = TAWC_ELOOP; break; }
+
+		if (!rw) rw = tawcroot_path_scratch_acquire();
+		char  *next = rw->buf[0];
+		size_t pos  = 0;
+		if (tawc_str_append(next, TAWCROOT_PATH_SCRATCH_SIZE, &pos, "/") ||
+		    tawc_str_append(next, TAWCROOT_PATH_SCRATCH_SIZE, &pos,
+				    out_suffix + ml)) {
+			r.err = TAWC_ENAMETOOLONG;
+			break;
+		}
+		path = next;
+	}
+	tawcroot_path_scratch_release(rw);
+
+	/* Impure companions (see block comment above). The orchestrator's
+	 * EROFS is the only error that reaches here with (base_fd,
+	 * out_suffix) valid — every earlier error returns before the
+	 * central check populates them. Containment runs before the RO
+	 * check: an out-of-view target's read-only-ness is not a question
+	 * the guest gets to ask. */
 	if (r.err == TAWC_EROFS)
 		r.err = ro_refusal_errno(r.base_fd, out_suffix, mode, intent);
-	else if (r.err == 0)
-		r.err = ro_check_proc_magic_link(mode, intent, r.base_fd,
-						 out_suffix);
+	else if (r.err == 0) {
+		r.err = contain_proc_magic_link(mode, proc_bind, r.base_fd,
+						out_suffix);
+		if (r.err == 0)
+			r.err = ro_check_proc_magic_link(mode, intent, r.base_fd,
+							 out_suffix);
+	}
 	return r;
 }

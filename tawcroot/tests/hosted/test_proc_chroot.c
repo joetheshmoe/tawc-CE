@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "hosted.h"
+#include "../integration/rootfs_helpers.h"
 
 #include "errno_neg.h"
 #include "fdtab.h"
@@ -431,6 +432,293 @@ test(hosted_readlink_proc_self_exe_returns_guest_path)
 	test_true(tiny[4] == 'Z');  /* untouched past bufsiz */
 
 	tawcroot_set_guest_exe_path(NULL);
+	th_teardown(&v);
+}
+
+/* --- /proc magic-link containment ---------------------------------------- */
+
+/* `/proc` is bound RW into every rootfs and a path matching a bind takes
+ * the early return in tawcroot_path_translate_with_ctx, so the suffix
+ * reaches the kernel unresolved — and the kernel's `/proc/<pid>/root` is
+ * the real HOST root (tawcroot never chroots). These tests pin the three
+ * outcomes: own-root is rewritten to the guest's root, everything else
+ * that resolves out of view is ENOENT, and our own fd links keep
+ * working. See contain_proc_magic_link / the rewrite loop in path.c. */
+
+test(hosted_proc_magic_link_classify)
+{
+	th_view v;
+	th_setup(&v, "proc-magicls");
+
+	int k;
+	char own[64];
+
+	/* Own root: rewritten, not refused. Both spellings and the
+	 * resolve-through form. */
+	test_int_eq((long)tawcroot_proc_magic_link_classify("self/root", &k), 9);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_ROOT_OWN);
+	test_int_eq((long)tawcroot_proc_magic_link_classify(
+			    "self/root/etc/probe", &k), 9);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_ROOT_OWN);
+	snprintf(own, sizeof own, "%d/root", getpid());
+	tawcroot_proc_magic_link_classify(own, &k);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_ROOT_OWN);
+
+	/* Another process's root, and any cwd: contained. */
+	tawcroot_proc_magic_link_classify("1/root", &k);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_CONTAIN);
+	tawcroot_proc_magic_link_classify("self/cwd", &k);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_CONTAIN);
+
+	/* Our own fd / map_files entries: exempt (we already hold the fd).
+	 * Another process's are not. */
+	tawcroot_proc_magic_link_classify("self/fd/3", &k);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_FD_OWN);
+	tawcroot_proc_magic_link_classify("self/map_files/400000-401000", &k);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_FD_OWN);
+	snprintf(own, sizeof own, "self/task/%d/fd/3", getpid());
+	tawcroot_proc_magic_link_classify(own, &k);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_FD_OWN);
+	tawcroot_proc_magic_link_classify("1/fd/3", &k);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_CONTAIN);
+
+	/* Non-links keep answering 0/NONE, and the prefix-only wrapper
+	 * (the RO check's entry point) agrees on every length. */
+	test_int_eq((long)tawcroot_proc_magic_link_classify("self/maps", &k), 0);
+	test_int_eq(k, TAWCROOT_PROC_MAGIC_NONE);
+	test_int_eq((long)tawcroot_proc_magic_link_classify("self/fd", &k), 0);
+	test_int_eq((long)tawcroot_proc_magic_link_prefix("self/root"), 9);
+	test_int_eq((long)tawcroot_proc_magic_link_prefix("self/cwd"), 8);
+	test_int_eq((long)tawcroot_proc_magic_link_prefix("self/fd/3"), 9);
+	test_int_eq((long)tawcroot_proc_magic_link_prefix("self/maps"), 0);
+
+	th_teardown(&v);
+}
+
+test(hosted_proc_self_root_routes_to_guest_root)
+{
+	th_view v;
+	th_setup(&v, "proc-selfroot");
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
+
+	/* Traversal answers what a real chroot would: the GUEST root. */
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/proc/self/root/etc/probe",
+			 O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	char buf[32] = {0};
+	test_true(read((int)fd, buf, sizeof buf - 1) > 0);
+	test_str_eq(buf, "from-rootfs\n");
+	test_int_eq(close((int)fd), 0);
+
+	/* Nested spellings unwind one link per pass. */
+	fd = th_sys(TAWC_SYS_openat, AT_FDCWD,
+		    "/proc/self/root/proc/self/root/etc/probe", O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	test_int_eq(close((int)fd), 0);
+
+	/* The escape. Target a host file that is NOT the rootfs or any
+	 * bind — a sibling of the rootfs dir, so the prefix walk can't
+	 * component-match it. Before the rewrite this read the host file;
+	 * now the name resolves inside the guest's own root and misses. */
+	char host_out[4300];
+	snprintf(host_out, sizeof host_out, "%s-outside", v.root);
+	test_true(rh_write_text(host_out, "from-host\n"));
+	test_int_eq(access(host_out, F_OK), 0);  /* the probe is meaningful */
+
+	char esc[4400];
+	snprintf(esc, sizeof esc, "/proc/self/root%s", host_out);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, esc, O_RDONLY, 0, 0, 0),
+		    TAWC_ENOENT);
+
+	/* Same for a write. The create is aimed at a directory that exists
+	 * on the host and not in the guest, so the rewritten name has
+	 * nowhere to land and nothing appears on the host. */
+	char host_dir[4300], host_esc[4400];
+	snprintf(host_dir, sizeof host_dir, "%s-outdir", v.root);
+	test_true(rh_mkdir_p(host_dir, 0755));
+	snprintf(host_esc, sizeof host_esc, "%s/escaped", host_dir);
+	snprintf(esc, sizeof esc, "/proc/self/root%s", host_esc);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, esc,
+			   O_WRONLY | O_CREAT, 0644, 0, 0), TAWC_ENOENT);
+	test_int_eq(access(host_esc, F_OK), -1);
+
+	test_int_eq(unlink(host_out), 0);
+	rh_rmrf(host_dir);
+
+	/* A write THROUGH the link into the view still works — containment
+	 * is not a refusal of the shape. */
+	fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/proc/self/root/tmp/inside",
+		    O_WRONLY | O_CREAT, 0644, 0, 0);
+	test_true(fd >= 0);
+	test_int_eq(close((int)fd), 0);
+	char inside[4300];
+	snprintf(inside, sizeof inside, "%s/tmp/inside", v.root);
+	test_int_eq(access(inside, F_OK), 0);
+
+	th_teardown(&v);
+}
+
+/* The link OBJECT is not the thing it points at: NOFOLLOW operations on
+ * a bare root link stay kernel-faithful (readlink answers "/", which is
+ * what a chroot'd process sees), while FOLLOW lands on the guest root. */
+test(hosted_proc_self_root_bare_link)
+{
+	th_view v;
+	th_setup(&v, "proc-rootbare");
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
+
+	char buf[64] = {0};
+	long n = th_sys(TAWC_SYS_readlinkat, AT_FDCWD, "/proc/self/root",
+			buf, sizeof buf - 1, 0, 0);
+	test_int_eq(n, 1);
+	test_str_eq(buf, "/");
+
+	/* FOLLOW: open/stat resolve to the guest root, not the host's. */
+	struct stat via_link, guest_root;
+	test_int_eq(th_sys(TAWC_SYS_fstatat, AT_FDCWD, "/proc/self/root",
+			   &via_link, 0, 0, 0), 0);
+	test_int_eq(stat(v.root, &guest_root), 0);
+	test_true(via_link.st_dev == guest_root.st_dev);
+	test_true(via_link.st_ino == guest_root.st_ino);
+
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/proc/self/root",
+			 O_RDONLY | O_DIRECTORY, 0, 0, 0);
+	test_true(fd >= 0);
+	struct stat opened;
+	test_int_eq(fstat((int)fd, &opened), 0);
+	test_true(opened.st_ino == guest_root.st_ino);
+	test_int_eq(close((int)fd), 0);
+
+	th_teardown(&v);
+}
+
+test(hosted_proc_other_pid_root_contained)
+{
+	th_view v;
+	th_setup(&v, "proc-otherroot");
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
+
+	pid_t child = fork();
+	test_true(child >= 0);
+	if (child == 0) {
+		pause();
+		_exit(0);
+	}
+
+	/* The child's root is the HOST root, and it is not ours, so the
+	 * link is resolved and contained rather than rewritten. Naming a
+	 * host file outside the view through it must miss. */
+	char host_out[4300];
+	snprintf(host_out, sizeof host_out, "%s-outside", v.root);
+	test_true(rh_write_text(host_out, "from-host\n"));
+
+	char esc[4400];
+	snprintf(esc, sizeof esc, "/proc/%d/root%s", (int)child, host_out);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, esc, O_RDONLY, 0, 0, 0),
+		    TAWC_ENOENT);
+	test_int_eq(unlink(host_out), 0);
+
+	/* But a host path that IS in view stays reachable, deliberately:
+	 * containment asks "can the guest name this?", and the rootfs's own
+	 * host path names the guest's /etc/probe. It is an alias for an
+	 * inode the guest already has, not an escape. */
+	snprintf(esc, sizeof esc, "/proc/%d/root%s/etc/probe", (int)child,
+		 v.root);
+	long alias = th_sys(TAWC_SYS_openat, AT_FDCWD, esc, O_RDONLY, 0, 0, 0);
+	test_true(alias >= 0);
+	test_int_eq(close((int)alias), 0);
+
+	/* Reading the bare link is unchanged — cross-process /proc stays
+	 * kernel-verbatim (notes/tawcroot/status.md "Known gaps"). */
+	char link[64], buf[64] = {0};
+	snprintf(link, sizeof link, "/proc/%d/root", (int)child);
+	test_int_eq(th_sys(TAWC_SYS_readlinkat, AT_FDCWD, link,
+			   buf, sizeof buf - 1, 0, 0), 1);
+	test_str_eq(buf, "/");
+
+	test_int_eq(kill(child, SIGKILL), 0);
+	test_int_eq(waitpid(child, NULL, 0), child);
+	th_teardown(&v);
+}
+
+test(hosted_proc_cwd_link_contained)
+{
+	th_view v;
+	th_setup(&v, "proc-cwdlink");
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
+
+	/* cwd inside the view: the kernel's own resolution is already
+	 * right, so traversal works. */
+	char p[4300];
+	snprintf(p, sizeof p, "%s/etc", v.root);
+	test_int_eq(chdir(p), 0);
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/proc/self/cwd/probe",
+			 O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	test_int_eq(close((int)fd), 0);
+
+	/* cwd outside the view: refuse rather than hand over the host tree
+	 * (same stance as readlink of the cwd link, and as getcwd). */
+	test_int_eq(chdir("/"), 0);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, "/proc/self/cwd/etc",
+			   O_RDONLY | O_DIRECTORY, 0, 0, 0), TAWC_ENOENT);
+
+	th_teardown(&v);
+}
+
+/* Our own fd links are deliberately NOT contained: the guest already
+ * holds the fd, so the link grants nothing new (the same line dirfd
+ * resolution draws for out-of-view dirfds). This is also what keeps
+ * /dev/stdin, /dev/fd/<n> and process substitution working — a pipe's
+ * link text isn't a path at all. */
+test(hosted_proc_own_fd_links_not_contained)
+{
+	th_view v;
+	th_setup(&v, "proc-ownfd");
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
+
+	char link[64];
+	char buf[32] = {0};
+
+	/* In-view directory fd, resolving through the link. */
+	long dfd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/etc",
+			  O_RDONLY | O_DIRECTORY, 0, 0, 0);
+	test_true(dfd >= 0);
+	snprintf(link, sizeof link, "/proc/self/fd/%ld/probe", dfd);
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, link, O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	test_true(read((int)fd, buf, sizeof buf - 1) > 0);
+	test_str_eq(buf, "from-rootfs\n");
+	test_int_eq(close((int)fd), 0);
+	test_int_eq(close((int)dfd), 0);
+
+	/* A pipe: not a path, must not be refused. */
+	int pp[2];
+	test_int_eq(pipe(pp), 0);
+	test_int_eq(write(pp[1], "hi\n", 3), 3);
+	snprintf(link, sizeof link, "/proc/self/fd/%d", pp[0]);
+	fd = th_sys(TAWC_SYS_openat, AT_FDCWD, link, O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	memset(buf, 0, sizeof buf);
+	test_int_eq(read((int)fd, buf, sizeof buf - 1), 3);
+	test_str_eq(buf, "hi\n");
+	test_int_eq(close((int)fd), 0);
+	test_int_eq(close(pp[0]), 0);
+	test_int_eq(close(pp[1]), 0);
+
+	/* An fd we hold on an OUT-of-view host file still re-opens through
+	 * its own link — the carve-out, stated as a test so a future
+	 * tightening has to argue with it. */
+	char host[4300];
+	snprintf(host, sizeof host, "%s/etc/probe", v.root);
+	int hfd = open(host, O_RDONLY | O_CLOEXEC);
+	test_true(hfd >= 0);
+	snprintf(link, sizeof link, "/proc/self/fd/%d", hfd);
+	fd = th_sys(TAWC_SYS_openat, AT_FDCWD, link, O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	test_int_eq(close((int)fd), 0);
+	test_int_eq(close(hfd), 0);
+
 	th_teardown(&v);
 }
 
