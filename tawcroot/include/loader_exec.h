@@ -17,6 +17,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "exec_state.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -27,6 +29,15 @@ extern "C" {
  * binfmt_script's default chain cap (4). */
 #define TAWC_SHEBANG_MAX_DEPTH 4
 #define TAWC_SHEBANG_BUF       256
+
+/* Max effective argc the loader can produce: everything the exec_state
+ * collection layer accepts, plus up to 2 prepended entries (interpreter
+ * + optional shebang arg) per shebang level. Post-collection stages
+ * (eff_argv here, the stack synthesizer) MUST size to this: by the
+ * time they run the execveat commit has destroyed the caller, so any
+ * lower cap kills the process instead of returning E2BIG. */
+#define TAWC_EXEC_EFF_ARGV_MAX \
+	(TAWCROOT_EXEC_STATE_MAX_ARGS + TAWC_SHEBANG_MAX_DEPTH * 2)
 
 /* Read and tokenize the "#!" line of `fd` (caller has already checked
  * the magic). `line` (capacity `cap`, typically TAWC_SHEBANG_BUF) holds

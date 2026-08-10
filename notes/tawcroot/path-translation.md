@@ -608,6 +608,23 @@ so total wall-cost is higher than a native exec but avoids a second
 host exec into ld.so. The big win is that the handler stays live with
 no signal-restoration trickery.
 
+**Argv/envp limits and the point of no return.** The exec_state
+collection caps (`TAWCROOT_EXEC_STATE_MAX_ARGS` 4096 args /
+`TAWCROOT_EXEC_STATE_MAX_ENV` 1024 envs / 64 KiB packed strings —
+`include/exec_state.h`) are checked *before* the `execveat` commit,
+so an oversized exec returns a real `-E2BIG` to the caller. Every
+stage after the commit (the loader's effective-argv array, the stack
+synthesizer) must accept at least what collection admitted *plus*
+up to `TAWC_SHEBANG_MAX_DEPTH * 2` shebang-prepended entries —
+`TAWC_EXEC_EFF_ARGV_MAX` in `include/loader_exec.h`. A smaller cap
+in any post-commit stage doesn't produce an errno; it destroys the
+already-committed process with a bare loader exit code and no
+stderr. This bit twice (loader_stack at 1024, loader_exec's
+eff_argv at ~264 — `cat *` over a few hundred files silently
+no-op'd); regression tests in `test_exec_via_handler.c`
+(`*_args_roundtrip`, `past_max_args_e2big_precommit`) and
+`test_loader_stack.c` pin the lockstep.
+
 This is conceptually what proot's loader does, modulo proot ships
 a separate `libproot-loader.so` for ptrace-land reasons. We have
 a different reason to fold loader and runtime into one binary:

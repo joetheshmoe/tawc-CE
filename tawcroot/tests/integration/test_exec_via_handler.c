@@ -32,6 +32,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "exec_state.h"
 #include "loader_elf.h"
 
 #ifndef TAWCROOT_TEST_TMPDIR
@@ -284,6 +285,83 @@ test(exec_via_handler_shebang_cmdline_has_interpreter)
 	const char *args[] = { "--exec-via-handler", p, NULL };
 	test_int_eq(run(args), 42);
 	(void)unlink(p);
+}
+
+test(exec_via_handler_300_args_roundtrip)
+{
+	/* The loader's eff_argv was once sized to ~264 entries; the 265th
+	 * arg destroyed the exec'd process post-commit (bare exit 74, no
+	 * errno, no stderr) — `cat *` over a few hundred files silently
+	 * no-op'd. Anything the collection layer accepts must survive. */
+	enum { N = 300 };
+	static const char *args[N + 6];
+	int n = 0;
+	args[n++] = "--exec-via-handler";
+	args[n++] = "/bin/sh";
+	args[n++] = "-c";
+	args[n++] = "[ \"$#\" = 300 ] && exit 42; exit 8";
+	args[n++] = "sh";
+	for (int i = 0; i < N; i++) args[n++] = "a";
+	args[n] = NULL;
+	test_int_eq(run(args), 42);
+}
+
+test(exec_via_handler_shebang_300_args_roundtrip)
+{
+	/* Same wall via a #! script (threshold was one lower there: the
+	 * interpreter prepend consumed an eff_argv slot). Mirrors the
+	 * original repro: ./argc.sh with a few hundred args exited 75. */
+	const char *p = make_exec_file("argc300",
+	                               "#!/bin/sh\n"
+	                               "[ \"$#\" = 300 ] && exit 42\n"
+	                               "exit 8\n");
+	test_true(p != NULL);
+	enum { N = 300 };
+	static const char *args[N + 3];
+	int n = 0;
+	args[n++] = "--exec-via-handler";
+	args[n++] = p;
+	for (int i = 0; i < N; i++) args[n++] = "a";
+	args[n] = NULL;
+	test_int_eq(run(args), 42);
+	(void)unlink(p);
+}
+
+test(exec_via_handler_collection_max_args_roundtrip)
+{
+	/* The exact lockstep bound: TAWCROOT_EXEC_STATE_MAX_ARGS total
+	 * argv entries — the most the collection layer admits — must make
+	 * it through the loader and stack synth. */
+	enum { TOTAL = TAWCROOT_EXEC_STATE_MAX_ARGS };
+	enum { NA = TOTAL - 4 };   /* minus sh, -c, script, $0 */
+	static char script[48];
+	snprintf(script, sizeof script,
+	         "[ \"$#\" = %d ] && exit 42; exit 8", (int)NA);
+	static const char *args[TOTAL + 2];
+	int n = 0;
+	args[n++] = "--exec-via-handler";
+	args[n++] = "/bin/sh";
+	args[n++] = "-c";
+	args[n++] = script;
+	args[n++] = "sh";
+	for (int i = 0; i < NA; i++) args[n++] = "a";
+	args[n] = NULL;
+	test_int_eq(run(args), 42);
+}
+
+test(exec_via_handler_past_max_args_e2big_precommit)
+{
+	/* One past the collection cap must fail BEFORE the execveat
+	 * commit — perform() returns -E2BIG (the guest's execve errno)
+	 * and testhost exits 50 — never a post-commit loader death. */
+	enum { TOTAL = TAWCROOT_EXEC_STATE_MAX_ARGS + 1 };
+	static const char *args[TOTAL + 2];
+	int n = 0;
+	args[n++] = "--exec-via-handler";
+	args[n++] = "/bin/true";
+	for (int i = 1; i < TOTAL; i++) args[n++] = "a";
+	args[n] = NULL;
+	test_int_eq(run(args), 50);
 }
 
 test(exec_via_handler_shebang_missing_interp_returns_50)

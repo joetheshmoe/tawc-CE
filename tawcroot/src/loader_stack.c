@@ -9,6 +9,7 @@
 
 #include "errno_neg.h"
 #include "exec_state.h"
+#include "loader_exec.h"
 #include "loader_stack.h"
 #include "tawc_string.h"
 
@@ -76,13 +77,16 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
 	/* envp/argv strings: walked in reverse logical order so that
 	 * argv[0] ends up at the lowest string address. We store each
 	 * string's eventual pointer in a fixed-size on-stack array.
-	 * Caps MUST match the exec_state collection limits: anything the
-	 * collection layer accepted has already passed the E2BIG check
-	 * and the execveat commit — rejecting it here kills the exec'd
-	 * process instead of returning an error to the (long gone)
-	 * caller. A 1024 cap here vs 4096 at collection did exactly that
-	 * for 1025+-arg execs (`rm *` on a big directory). */
-#define MAX_ARGS TAWCROOT_EXEC_STATE_MAX_ARGS
+	 * Caps MUST cover everything the exec_state collection limits
+	 * admit: anything the collection layer accepted has already
+	 * passed the E2BIG check and the execveat commit — rejecting it
+	 * here kills the exec'd process instead of returning an error to
+	 * the (long gone) caller. A 1024 cap here vs 4096 at collection
+	 * did exactly that for 1025+-arg execs (`rm *` on a big
+	 * directory). argv additionally needs the shebang-prepend
+	 * headroom (TAWC_EXEC_EFF_ARGV_MAX), since resolve_shebangs can
+	 * push argc past the collection cap. */
+#define MAX_ARGS TAWC_EXEC_EFF_ARGV_MAX
 #define MAX_ENV  TAWCROOT_EXEC_STATE_MAX_ENV
 	if (in->argc > MAX_ARGS || envc > MAX_ENV) return TAWC_EINVAL;
 	uintptr_t argv_buf[MAX_ARGS];

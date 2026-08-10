@@ -75,5 +75,13 @@ shebang stage, rejected *after* the execveat commit so the guest gets a
 bare exit code, no errno, no stderr — even though `getconf ARG_MAX`
 reports 2 MB and the collection layer accepts 4096 args.
 
-See issues/usecase_tests/tawcroot-argv-count-capped-at-256-silently-destroys-exec.md
-Re-run and (if fixed) verify the big-argv idioms, then this can pass.
+Update 2026-08-09: fixed in tawcroot (loader `eff_argv` and the stack
+synthesizer now sized to everything the collection layer accepts plus
+shebang headroom, `TAWC_EXEC_EFF_ARGV_MAX`; >4096 args returns a real
+`E2BIG` pre-commit). Verified on the emulator sid rootfs: 260/300/1000/
+4000-arg script execs, `cat`/`grep`/`rm` over 2000 file args, and a
+clean "Argument list too long" at 4200. Regression tests added in
+`tawcroot/tests/integration/test_exec_via_handler.c` and
+`test_loader_stack.c`; design note in notes/tawcroot/path-translation.md
+(§"execve handling in detail"). Re-run this plan end-to-end, then it
+can pass.

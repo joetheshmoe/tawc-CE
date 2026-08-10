@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 
 #include "exec_state.h"
+#include "loader_exec.h"
 #include "loader_stack.h"
 
 /* Allocate a stack region the test can write to. We use mmap so we
@@ -358,11 +359,13 @@ test(stack_with_many_args)
 test(stack_accepts_collection_layer_max_args)
 {
 	/* The exec_state collection layer accepts up to
-	 * TAWCROOT_EXEC_STATE_MAX_ARGS args; by the time the loader runs,
-	 * the caller has already been destroyed by the execveat commit, so
-	 * the loader must accept the same count (a lower cap here killed
-	 * 1025+-arg execs like `rm *` on a big directory). */
-	enum { N = TAWCROOT_EXEC_STATE_MAX_ARGS };
+	 * TAWCROOT_EXEC_STATE_MAX_ARGS args, and shebang resolution can
+	 * prepend up to TAWC_SHEBANG_MAX_DEPTH * 2 more; by the time the
+	 * loader runs, the caller has already been destroyed by the
+	 * execveat commit, so the loader must accept the full effective
+	 * count (a lower cap here killed 1025+-arg execs like `rm *` on
+	 * a big directory). */
+	enum { N = TAWC_EXEC_EFF_ARGV_MAX };
 	static const char *argv[N + 1];
 	const char *envp[2] = { "VAR=value", NULL };
 	for (int i = 0; i < N; i++)

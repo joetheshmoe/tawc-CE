@@ -264,7 +264,12 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 	 * interpreter, prepend the script path as the first arg. We mutate
 	 * a working argv array; argv[0] starts as the original guest path
 	 * and we rebuild from there. */
-	static const char *eff_argv[TAWC_SHEBANG_MAX_DEPTH * 2 + 256];
+	/* Sized to TAWC_EXEC_EFF_ARGV_MAX: must hold every argv the
+	 * collection layer accepted (see the constant's comment — a
+	 * smaller array here silently destroyed >256-arg execs). The 74
+	 * backstop only guards the --exec diagnostic path, which feeds
+	 * raw CLI argc without the collection-layer cap. */
+	static const char *eff_argv[TAWC_EXEC_EFF_ARGV_MAX + 1];
 	int eff_argc = 0;
 	if (args->argc > (int)(sizeof eff_argv / sizeof eff_argv[0]) - 1)
 		LOADER_FAIL(74);
