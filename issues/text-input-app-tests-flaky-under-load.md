@@ -10,9 +10,25 @@ in later full runs):
   after `Ctrl+V` in `ctrl_key()` racing GTK's async data-offer paste, so
   the subsequent `commitText(" input")` / `deleteSurroundingText(5,0)`
   interleave with the paste landing.
-- `text_input::test_stale_newline_context_editing_paths`: failed once in
-  a full-filter run (exact assertion not captured), passed in every
-  other run including the same filter afterwards.
+- `text_input::test_stale_newline_context_editing_paths`: fails roughly
+  1 run in 10 on the x86_64 rootless emulator too, in isolation as well
+  as in full runs. Assertion captured 2026-08-10, always on the emoji
+  round of `build_stale_newline_context` (`text_input.rs:1036`):
+
+  ```
+  expected "a😀bc\\n" after recommit/newline: Timeout after 5s waiting
+  for text 'a😀bc\n' (received: [… "TEXT_CHANGED:a😀bc", "CURSOR_POS:4",
+  "DONE", "TEXT_CHANGED:a😀bca😀bc", "CURSOR_POS:8", "DONE",
+  "KEY:Return", "TEXT_CHANGED:a😀bca😀bc\\n", "CURSOR_POS:9", …])
+  ```
+
+  So the `setComposingRegion(0, 4)` before the re-commit didn't cover
+  the existing word: the re-commit *appended* `a😀bc` instead of
+  replacing it. Suspect the region call racing the preceding
+  `commitText`'s state settling — note the surrogate pair means the
+  UTF-16 length (4) differs from the visible length, so an off-by-one
+  in the region would truncate rather than append; appending points at
+  the region never being applied at all.
 
 Neither test uses `setComposingText`, so the mid-composition echo skip
 (added for the Kate preedit-echo bug) never engages in either — the
