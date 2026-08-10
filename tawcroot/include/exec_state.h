@@ -170,6 +170,7 @@ typedef struct {
 	int          shm_fd[TAWCROOT_EXEC_STATE_MAX_SHM];
 	int           has_identity;
 	tawc_identity identity;      /* valid iff has_identity */
+	const char  *proctitle;      /* may be NULL (v7; commit() argv[0]) */
 } tawcroot_exec_state;
 
 /* Optional inputs for the writer — may all be NULL/0 to indicate "no

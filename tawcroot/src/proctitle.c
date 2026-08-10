@@ -52,9 +52,10 @@ void tawcroot_proctitle_apply(const char *exec_path,
 
 	/* NUL-join argv into the bounce (sources may overlap the region),
 	 * then copy over the region and NUL-fill the tail. Truncate to
-	 * whichever of bounce/region fills first; the region was pre-sized
-	 * by the exec handler so real truncation is a shebang chain
-	 * outgrowing the writer's slack. */
+	 * whichever of bounce/region fills first; the exec handler sizes
+	 * the region to the exact post-shebang argv byte count, so real
+	 * truncation only happens when the file changed between the
+	 * handler's probe and our load (TOCTOU). */
 	size_t cap = (size_t)(g_arg_end - g_arg_start);
 	if (cap > sizeof g_bounce) cap = sizeof g_bounce;
 	size_t len = 0;

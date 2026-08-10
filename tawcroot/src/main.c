@@ -190,7 +190,7 @@ static __attribute__((noreturn)) void usage(int code)
 	tawc_io_str("tawcroot-testhost: usage:\n"
 	            "  tawcroot-testhost                         (foundation smoke)\n"
 	            "  tawcroot-testhost --exec PATH [ARGS...]   (loader diagnostic)\n"
-	            "  tawcroot-testhost --exec-via-handler PATH [ARGS...]\n"
+	            "  tawcroot-testhost --exec-via-handler [--argv0=NAME] PATH [ARGS...]\n"
 	            "  tawcroot-testhost --exec-child <fd>       (handler re-exec target)\n"
 	            "  tawcroot-testhost -r ROOTFS [-b SRC:DST[:ro]]...\n");
 #else
@@ -521,10 +521,24 @@ void tawcroot_main(int argc, char **argv)
 		case ENTRY_EXEC_VIA_HANDLER: {
 			if (argc < 3) usage(2);
 			capture_host_auxv(argc, argv);
+			/* Testhost-only: `--argv0=NAME PATH ARGS...` execs PATH
+			 * with argv[0] = NAME, so tests can exercise the
+			 * argv[0]-passthrough contract (login-shell "-sh",
+			 * busybox dispatch, exec -a). Rewriting argv[pi] in
+			 * place hands perform() a normally-shaped argv whose
+			 * slot 0 differs from the exec path. */
+			int pi = 2;
+			const char *exec_path = argv[2];
+			if (tawc_starts_with(argv[2], "--argv0=")) {
+				if (argc < 4) usage(2);
+				pi = 3;
+				exec_path = argv[3];
+				argv[3] = argv[2] + (sizeof "--argv0=" - 1);
+			}
 			long rc = tawcroot_exec_handler_perform(
-				argv[2],
-				argc - 2,
-				(const char *const *)(argv + 2),
+				exec_path,
+				argc - pi,
+				(const char *const *)(argv + pi),
 				(const char *const *)derive_envp(argc, argv));
 			tawc_io_str("tawcroot: --exec-via-handler: handler returned ");
 			tawc_io_dec(rc);

@@ -14,10 +14,14 @@
  *     i.e. the initial-stack argv strings) in place with the guest's
  *     NUL-joined argv, NUL-filling the tail — the classic unprivileged
  *     setproctitle technique. The region can't be grown without
- *     CAP_SYS_RESOURCE, so the exec handler pre-sizes it by passing
- *     the space-joined guest cmdline (exec_state's proctitle) as
- *     argv[0] of the execveat-into-self. Truncation only happens when
- *     a shebang chain expands past the writer's slack.
+ *     CAP_SYS_RESOURCE, so the exec handler pre-sizes it EXACTLY:
+ *     exec_state's proctitle (the execveat argv[0]) is computed as the
+ *     post-shebang NUL-joined argv length minus the "--exec-child <fd>"
+ *     protocol overhead, so the rewritten cmdline normally has zero
+ *     trailing slack. Residual NULs remain only when the cmdline is
+ *     shorter than the protocol args (nothing left to shrink) or on
+ *     the top-level prod entry (region = the full tawcroot CLI);
+ *     truncation only under probe/load TOCTOU races.
  *
  * /proc/<pid>/exe is left alone: PR_SET_MM_EXE_FILE needs
  * CAP_SYS_RESOURCE, and /proc/self/exe must keep naming libtawcroot.so

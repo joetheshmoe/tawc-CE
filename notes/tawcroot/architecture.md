@@ -142,12 +142,14 @@ string parsing. It contains:
 - tawcroot flags such as debug logging;
 - guest-requested exec path and `argv` strings.
 
-The guest `envp` is not copied into the state fd. The handler passes
-the guest's original `envp` to `execveat()` unchanged, so after the
-host re-exec it is available as tawcroot's normal environment. That
-environment is treated only as guest payload when building the
-synthesized stack; `--exec-child` does not read internal config from
-it.
+The guest `envp` IS copied into the state fd (it's what the loader
+puts on the synthesized guest stack), and the handler ALSO passes it
+as the `execveat()` envp — pointers into the mmap'd state — so the
+kernel-built env region (`/proc/<pid>/environ`, `ps e`) shows the
+guest environment rather than nothing. Both views come from the same
+serialized bytes, so they agree; the state is authoritative. The
+re-exec'd tawcroot treats that environment purely as guest payload;
+`--exec-child` does not read internal config from it.
 
 Preferred implementation is `memfd_create("tawcroot-exec-state",
 MFD_CLOEXEC)` followed by clearing `FD_CLOEXEC` only on the fd passed

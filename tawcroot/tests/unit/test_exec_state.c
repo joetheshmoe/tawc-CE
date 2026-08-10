@@ -42,6 +42,34 @@ test(exec_state_basic_roundtrip)
 	test_str_eq(out.envp[0], "PATH=/bin");
 	test_str_eq(out.envp[1], "HOME=/root");
 	test_ptr_eq(out.envp[2], NULL);
+	test_ptr_eq(out.proctitle, NULL);  /* no extras → absent */
+	free(buf);
+}
+
+test(exec_state_carries_proctitle)
+{
+	/* v7: the proctitle string commit() uses as the re-exec argv[0]
+	 * to size the kernel arg region. Length-significant (may end in
+	 * padding spaces), so round-trip must be byte-exact. */
+	const char *argv[] = { "worker", "--flag", NULL };
+	const char *envp[] = { NULL };
+	tawcroot_exec_state_extras ex = { 0 };
+	ex.proctitle = "worker --flag   ";
+
+	size_t need = tawcroot_exec_state_estimate_bytes("/bin/worker", 2,
+	                                                 argv, envp, &ex);
+	uint8_t *buf = malloc(need);
+	test_nonnull(buf);
+	test_int_eq((int)tawcroot_exec_state_write(buf, need, "/bin/worker",
+	                                           2, argv, envp, &ex),
+	            (int)need);
+
+	const char *argv_buf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
+	const char *envp_buf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
+	tawcroot_exec_state out;
+	test_int_eq((int)tawcroot_exec_state_read(buf, need, argv_buf,
+	                                          envp_buf, &out), 0);
+	test_str_eq(out.proctitle, "worker --flag   ");
 	free(buf);
 }
 

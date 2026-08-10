@@ -143,11 +143,17 @@ long tawcroot_shebang_read(int fd, char *line, size_t cap,
 	return 0;
 }
 
-/* Resolve a #! shebang chain. Prepends argv entries (the interpreter,
- * optionally a single shebang argument; the original argv[0] becomes
- * the script-path argument) into `argv_out` in place. Returns the
- * resolved fd of the final binary on success (caller takes ownership),
- * or -errno on failure (the working fd is closed).
+/* Resolve a #! shebang chain. Rewrites `argv_out` in place the way the
+ * kernel's binfmt_script does: drop the caller's argv[0], prepend
+ * [interpreter, optional single shebang argument, script path]. The
+ * script path comes in via `script_path0` — NOT smuggled through
+ * argv_out[0], which since the argv[0]-fidelity fix holds the caller's
+ * argv[0] (can be anything: "-bash", a busybox applet name, exec -a).
+ * Deeper levels re-run the same rewrite with the previous level's
+ * interpreter as the "script": at that point argv_out[0] IS its path,
+ * placed there by the previous iteration. Returns the resolved fd of
+ * the final binary on success (caller takes ownership), or -errno on
+ * failure (the working fd is closed).
  *
  * Each shebang line yields at most ONE argv argument after the
  * interpreter path. Linux splits on the FIRST whitespace in the
@@ -155,6 +161,7 @@ long tawcroot_shebang_read(int fd, char *line, size_t cap,
  * as a single argument, regardless of further whitespace. We match
  * that behaviour. */
 static long resolve_shebangs(int initial_fd,
+                             const char *script_path0,
                              const char **argv_out,
                              size_t argv_cap,
                              int *argc_out)
@@ -181,10 +188,11 @@ static long resolve_shebangs(int initial_fd,
 		                                &interp, &shebang_arg);
 		if (pe < 0) { tawc_close(bin_fd); return pe; }
 
-		/* Duplicate the original script path so we can reuse path_buf
-		 * for the interpreter. The script-path string was stored in
-		 * argv[0] originally (which still points at it); we use that. */
-		const char *script_path = argv_out[0];
+		/* Level 0: the script path parameter. Deeper levels: the
+		 * previous interpreter (its path is what the previous
+		 * iteration wrote into argv_out[0]). */
+		const char *script_path = depth == 0 ? script_path0
+		                                     : argv_out[0];
 
 		/* Prepend: argv = [interp, [shebang_arg,] script_path, oldargv[1..]].
 		 * Static storage so we don't return stack pointers; one slot
@@ -260,27 +268,28 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 	int eff_argc = 0;
 	if (args->argc > (int)(sizeof eff_argv / sizeof eff_argv[0]) - 1)
 		LOADER_FAIL(74);
-	/* Seed argv[0] = the original guest path (not the user-provided
-	 * argv[0], which can be anything; binfmt_script uses the actual
-	 * script path). */
+	/* argv[0] passes through VERBATIM, like the kernel's: login shells
+	 * rely on a leading "-", busybox-style multiplexers dispatch on it,
+	 * and `exec -a` sets it freely. (An earlier revision seeded the
+	 * exec path here so resolve_shebangs could read the script path out
+	 * of slot 0 — that silently broke all of the above; the script path
+	 * now travels as an explicit parameter.) argc == 0 seeds "" — the
+	 * kernel since 5.18 similarly forces argc ≥ 1, with "". */
 	static char path_storage[TAWC_LDR_PATH_MAX];
 	(void)tawc_str_copy(path_storage, sizeof path_storage,
 	                    args->guest_path);
-	/* argc == 0: synthesize argv[0] from the exec path so a shebang
-	 * resolve doesn't lose the script path (the kernel since 5.18
-	 * similarly forces argc ≥ 1, with ""). */
 	eff_argc = args->argc > 0 ? args->argc : 1;
-	eff_argv[0] = path_storage;
+	eff_argv[0] = (args->argc > 0 && args->argv[0]) ? args->argv[0] : "";
 	for (int i = 1; i < args->argc; i++) eff_argv[i] = args->argv[i];
 	eff_argv[eff_argc] = 0;
 
-	/* NOTE: path_storage must not be mutated after this point. It is
-	 * argv[0]'s original value, and after a shebang resolve that
-	 * pointer lives on as the script-path argv entry — overwriting it
-	 * would silently change the interpreter's argument under us
-	 * (exactly what bit pacman-key). AT_EXECFN uses args->guest_path
-	 * directly, which is unaffected. */
-	long resolved_fd = resolve_shebangs((int)bin_fd, eff_argv,
+	/* NOTE: path_storage must not be mutated after this point. After a
+	 * shebang resolve that pointer lives on as the script-path argv
+	 * entry — overwriting it would silently change the interpreter's
+	 * argument under us (exactly what bit pacman-key). AT_EXECFN uses
+	 * args->guest_path directly, which is unaffected. */
+	long resolved_fd = resolve_shebangs((int)bin_fd, path_storage,
+	                                    eff_argv,
 	                                    sizeof eff_argv / sizeof eff_argv[0],
 	                                    &eff_argc);
 	if (resolved_fd < 0) LOADER_FAIL(75);

@@ -362,11 +362,15 @@ covered by unit/hosted/smoke tests.)
   wholesale, so this leaks nothing the kernel doesn't. Includes
   `/proc/<pid>/root` of an emulated-chroot'd guest, which an outside
   observer sees as "/" where a real kernel would show the chroot dir.
-  Cross-process `comm`/`cmdline` ARE kernel-truthful since the
-  proctitle work (proctitle.h: PR_SET_NAME + in-place arg-region
-  rewrite at the loader jump, region pre-sized via exec_state's
-  proctitle as the execveat argv[0]) — that's what makes
-  pgrep/pkill/ps identify guest processes. `/proc/<pid>/exe` remains
+  Cross-process `comm`/`cmdline`/`environ` ARE kernel-truthful since
+  the proctitle work (proctitle.h: PR_SET_NAME + in-place arg-region
+  rewrite at the loader jump; the region is pre-sized byte-exactly via
+  exec_state's proctitle as the execveat argv[0], and the execveat
+  envp points at the guest env strings in the state) — that's what
+  makes pgrep/pkill/ps identify guest processes. Caller argv[0] also
+  passes through verbatim (login-shell "-sh", busybox dispatch,
+  `exec -a`); an earlier loader revision replaced it with the exec
+  path. `/proc/<pid>/exe` remains
   libtawcroot.so cross-process: PR_SET_MM_EXE_FILE needs
   CAP_SYS_RESOURCE, and /proc/self/exe must keep naming our binary —
   the exec handler re-execs through it (own-process reads are

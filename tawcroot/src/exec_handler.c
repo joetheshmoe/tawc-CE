@@ -259,27 +259,49 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 		extras.shm_fd   = shm_fd_arr;
 	}
 
-	/* Proctitle: the space-joined cmdline the loader will install
-	 * (path + argv[1..] — the loader's eff_argv[0] is the exec path),
-	 * padded with spaces for shebang expansion. commit() passes it as
-	 * argv[0] of the execveat so the new process's kernel arg region
-	 * is big enough for proctitle.c's in-place rewrite. Static: the
-	 * caller holds exec_lock (thread-safety note in exec_handler.h). */
+	/* Proctitle: sizes the re-exec'd process's kernel arg region so
+	 * proctitle.c's in-place rewrite fits the final cmdline EXACTLY.
+	 * The loader installs (post-shebang) eff_argv, whose NUL-joined
+	 * byte count is:
+	 *   shebang:     interp/arg prepends (title_extra) + path +
+	 *                argv[1..]  (binfmt_script drops caller argv[0])
+	 *   non-shebang: argv[0] + argv[1..]  ("" when argc == 0)
+	 * The execveat argv also carries "--exec-child <fd>", so the title
+	 * is shrunk by that protocol overhead; the region then comes out
+	 * at exactly the target size and the rewrite leaves no trailing
+	 * NUL slack (matters to pkill -fx and anything reading cmdline
+	 * byte-exactly). Cmdlines shorter than the overhead keep a few
+	 * trailing NULs — nothing to shrink below the protocol args.
+	 * Only the LENGTH matters; the content (space-joined guest argv,
+	 * truncated or space-padded to length) is visible only in the µs
+	 * between the execveat and the loader's rewrite, or if the loader
+	 * dies mid-bootstrap. Static: caller holds exec_lock
+	 * (thread-safety note in exec_handler.h). */
 	static char title_buf[EXEC_TITLE_BUF_SIZE];
 	{
+		char fdtmp[24];
+		int fdlen = tawc_int_to_str(fdtmp, sizeof fdtmp, (int)mfd);
+		if (fdlen <= 0) fdlen = 1;
+		size_t overhead = sizeof "--exec-child" + (size_t)fdlen + 1;
+
+		size_t want = 0;   /* exact NUL-joined eff_argv byte count */
+		for (int i = 1; i < argc && argv[i]; i++)
+			want += tawc_strlen(argv[i]) + 1;
+		if (title_extra > 0)
+			want += title_extra + tawc_strlen(path) + 1;
+		else
+			want += (argc > 0 ? tawc_strlen(argv[0]) : 0) + 1;
+
+		size_t tlen = want > overhead + 1 ? want - 1 - overhead : 0;
+		if (tlen > sizeof title_buf - 1) tlen = sizeof title_buf - 1;
+
 		size_t pos = 0;
-		(void)tawc_str_append(title_buf, sizeof title_buf, &pos, path);
-		for (int i = 1; i < argc && argv[i]; i++) {
-			if (tawc_str_append(title_buf, sizeof title_buf,
-			                    &pos, " ") ||
-			    tawc_str_append(title_buf, sizeof title_buf,
-			                    &pos, argv[i]))
-				break;
+		for (int i = 0; i < argc && argv[i] && pos < tlen; i++) {
+			if (i > 0) title_buf[pos++] = ' ';
+			const char *s = argv[i];
+			while (*s && pos < tlen) title_buf[pos++] = *s++;
 		}
-		while (title_extra > 0 && pos + 1 < sizeof title_buf) {
-			title_buf[pos++] = ' ';
-			title_extra--;
-		}
+		while (pos < tlen) title_buf[pos++] = ' ';
 		title_buf[pos] = 0;
 		extras.proctitle = title_buf;
 	}
@@ -344,8 +366,22 @@ long tawcroot_exec_handler_commit(int mfd)
 
 	char arg0_fallback[] = "tawcroot";
 	const char *arg0 = arg0_fallback;
-	long map_rv = -1;
-	size_t map_len = 0;
+	/* (5b) envp for the re-exec: the guest's envp, as pointers into
+	 * the mapped state, so the kernel-built env region — what
+	 * /proc/<pid>/environ shows, to the process itself and to ps e —
+	 * carries the guest environment instead of nothing. The
+	 * synthesized guest stack gets its envp from the SAME state, so
+	 * the two views agree byte-for-byte. The new tawcroot incarnation
+	 * never reads config from its environ (Environment rule,
+	 * notes/tawcroot/architecture.md), so inheriting guest payload is
+	 * safe. Fallback on any validation failure: empty env — identical
+	 * to the pre-fix behaviour, and the guest still gets its real env
+	 * from the state. */
+	char *empty_env[1];
+	empty_env[0] = (char *)0;
+	char **envp_for_self = empty_env;
+	long map_rv = -1, env_arr_rv = -1;
+	size_t map_len = 0, env_arr_len = 0;
 	long sz = tawc_lseek((int)mfd, 0, 2 /*SEEK_END*/);
 	if (sz >= (long)sizeof(tawcroot_exec_state_header)) {
 		long mrv = tawc_mmap((void *)0, (size_t)sz, TAWC_MM_PROT_READ,
@@ -357,16 +393,52 @@ long tawcroot_exec_handler_commit(int mfd)
 				(const tawcroot_exec_state_header *)(uintptr_t)mrv;
 			const char *strings =
 				(const char *)(uintptr_t)mrv + sizeof *h;
+			const char *end;
 			if (h->magic == TAWCROOT_EXEC_STATE_MAGIC &&
 			    h->version == TAWCROOT_EXEC_STATE_VERSION &&
-			    h->proctitle_off != 0 &&
-			    h->proctitle_off < h->string_bytes &&
 			    sizeof *h + (size_t)h->string_bytes <= (size_t)sz) {
-				const char *p = strings + h->proctitle_off;
-				const char *end = strings + h->string_bytes;
-				const char *q = p;
-				while (q < end && *q) q++;
-				if (q < end) arg0 = p;
+				end = strings + h->string_bytes;
+				if (h->proctitle_off != 0 &&
+				    h->proctitle_off < h->string_bytes) {
+					const char *p = strings + h->proctitle_off;
+					const char *q = p;
+					while (q < end && *q) q++;
+					if (q < end) arg0 = p;
+				}
+				/* Pointer array in a private anon mapping —
+				 * commit runs unlocked and may touch no shared
+				 * statics (see header note). */
+				if (h->envc <= TAWCROOT_EXEC_STATE_MAX_ENV) {
+					size_t need = ((size_t)h->envc + 1) *
+					              sizeof(char *);
+					long ar = tawc_mmap((void *)0, need,
+					        TAWC_MM_PROT_READ | TAWC_MM_PROT_WRITE,
+					        TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_ANON,
+					        -1, 0);
+					if (!tawc_loader_mmap_is_err((uintptr_t)ar)) {
+						char **arr = (char **)(uintptr_t)ar;
+						uint32_t i = 0;
+						for (; i < h->envc; i++) {
+							uint32_t off = h->envp_off[i];
+							if (off >= h->string_bytes)
+								break;
+							const char *q = strings + off;
+							while (q < end && *q) q++;
+							if (q == end) break;
+							arr[i] = (char *)(strings + off);
+						}
+						if (i == h->envc) {
+							arr[i] = (char *)0;
+							envp_for_self = arr;
+							env_arr_rv = ar;
+							env_arr_len = need;
+						} else {
+							(void)tawc_munmap(
+							    (void *)(uintptr_t)ar,
+							    need);
+						}
+					}
+				}
 			}
 		}
 	}
@@ -377,19 +449,11 @@ long tawcroot_exec_handler_commit(int mfd)
 	new_argv[2] = fdstr;
 	new_argv[3] = (char *)0;
 
-	/* Inherit the supervisor's envp. Production callers (the SIGSYS
-	 * handler) would normally pass the GUEST'S envp here so the new
-	 * program sees what the guest configured. We honour that by
-	 * forwarding `envp` through to the synthesized stack via
-	 * exec_state — the *new tawcroot incarnation* sees a fresh envp
-	 * from the kernel-built initial stack (we use it for our own
-	 * supervisor needs, not the guest's), and `loader_exec_child`
-	 * passes the guest's envp from exec_state to the loader. */
-	char *envp_for_self[] = { (char *)0 };
-
 	long er = tawc_execveat((int)exe_fd, "", new_argv, envp_for_self,
 	                        AT_EMPTY_PATH);
 	/* On success execveat does not return. On failure er is -errno. */
+	if (env_arr_rv >= 0)
+		(void)tawc_munmap((void *)(uintptr_t)env_arr_rv, env_arr_len);
 	if (map_rv >= 0)
 		(void)tawc_munmap((void *)(uintptr_t)map_rv, map_len);
 	tawc_close((int)exe_fd);

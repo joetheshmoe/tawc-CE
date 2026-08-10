@@ -62,6 +62,20 @@ static int run(const char *const *extra_args)
 	return rc;
 }
 
+/* Run `script` under /bin/sh -c — for tests that need a wrapper shell
+ * around the testhost invocation (e.g. to inject an env var). */
+static int run_sh(const char *script)
+{
+	VecStr cmd = c_init(vec_str, {"/bin/sh", "-c"});
+	vec_str_push(&cmd, script);
+	int rc = -1;
+	FailableResult res = run_subproc((SubprocArgs){
+		.vec_cmd = cmd, .exit_code = &rc
+	});
+	failable_result_drop(&res);
+	return rc;
+}
+
 test(exec_via_handler_static_exit42)
 {
 	const char *args[] = { "--exec-via-handler",
@@ -185,10 +199,10 @@ test(exec_via_handler_sets_comm_and_cmdline)
 	/* Kernel-visible identity must match the guest after the dance:
 	 * comm = basename of the exec path (PR_SET_NAME at the loader
 	 * jump), cmdline = the guest argv NUL-joined (in-place arg-region
-	 * rewrite; trailing NUL slack from the re-exec protocol overhead
-	 * is allowed, hence the prefix match). Pre-fix both read as the
-	 * re-exec protocol ("tawcroot --exec-child <fd>" / comm "<fd>"),
-	 * so pgrep/pkill/ps couldn't identify any guest process. */
+	 * rewrite; prefix match because the script text is itself the
+	 * last argv entry). Pre-fix both read as the re-exec protocol
+	 * ("tawcroot --exec-child <fd>" / comm "<fd>"), so pgrep/pkill/ps
+	 * couldn't identify any guest process. */
 	const char *script =
 		"[ \"$(cat /proc/$$/comm)\" = sh ] || exit 7; "
 		"case \"$(tr '\\0' ' ' < /proc/$$/cmdline)\" in "
@@ -196,6 +210,60 @@ test(exec_via_handler_sets_comm_and_cmdline)
 	const char *args[] = { "--exec-via-handler", "/bin/sh", "-c",
 	                       script, NULL };
 	test_int_eq(run(args), 42);
+}
+
+test(exec_via_handler_custom_argv0_passthrough)
+{
+	/* Caller argv[0] reaches the guest verbatim — on the synthesized
+	 * stack ($0) and in the kernel cmdline — while comm stays the
+	 * exec-path basename, exactly like a real execve. Login shells'
+	 * "-sh", busybox applet dispatch, and `exec -a` all depend on
+	 * this. Pre-fix the loader replaced argv[0] with the exec path
+	 * (it smuggled the script path through slot 0 for shebangs). */
+	const char *script =
+		"[ \"$0\" = customsh0 ] || exit 7; "
+		"[ \"$(cat /proc/$$/comm)\" = sh ] || exit 8; "
+		"case \"$(tr '\\0' ' ' < /proc/$$/cmdline)\" in "
+		"'customsh0 -c '*) exit 42;; *) exit 9;; esac";
+	const char *args[] = { "--exec-via-handler", "--argv0=customsh0",
+	                       "/bin/sh", "-c", script, NULL };
+	test_int_eq(run(args), 42);
+}
+
+test(exec_via_handler_cmdline_exact_length)
+{
+	/* The arg region is sized to the byte: prepare() computes the
+	 * post-shebang NUL-joined argv length and shrinks the proctitle
+	 * by the "--exec-child <fd>" protocol overhead, so the rewritten
+	 * cmdline ends exactly at the last argument's NUL. tr maps NULs
+	 * to '|': an exact region ends "...#end|"; any trailing slack
+	 * would end "...||" (the earlier slack-padded sizing left ~17). */
+	const char *script =
+		"cl=$(tr '\\0' '|' < /proc/$$/cmdline); "
+		"case \"$cl\" in *'#end|') ;; *) exit 8;; esac; "
+		"case \"$cl\" in *'||') exit 9;; esac; "
+		"exit 42 #end";
+	const char *args[] = { "--exec-via-handler", "/bin/sh", "-c",
+	                       script, NULL };
+	test_int_eq(run(args), 42);
+}
+
+test(exec_via_handler_environ_region_matches_guest_env)
+{
+	/* /proc/<pid>/environ is the kernel env region, rebuilt by each
+	 * real exec from the execveat's envp. commit() must forward the
+	 * guest envp there (pointers into the mapped exec_state) or every
+	 * guest process shows an EMPTY environ — to itself and to `ps e`.
+	 * The wrapper injects a marker into testhost's environment;
+	 * perform() forwards testhost's envp as the guest envp, so the
+	 * guest sh must find the marker in its own /proc/$$/environ. */
+	static char script[512];
+	snprintf(script, sizeof script,
+	         "TAWC_E2E_ENVIRON=visible exec '%s' --exec-via-handler "
+	         "/bin/sh -c 'tr \"\\\\0\" \"\\\\n\" < /proc/$$/environ | "
+	         "grep -qx TAWC_E2E_ENVIRON=visible && exit 42; exit 8'",
+	         TAWCROOT_TESTHOST_BIN);
+	test_int_eq(run_sh(script), 42);
 }
 
 test(exec_via_handler_shebang_cmdline_has_interpreter)

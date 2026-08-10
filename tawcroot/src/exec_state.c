@@ -249,6 +249,8 @@ long tawcroot_exec_state_read(const void *buf, size_t buf_size,
 		out->shm_name[i] = strings + h->shm_name_off[i];
 		out->shm_fd[i]   = (int)h->shm_fd[i];
 	}
+	out->proctitle = h->proctitle_off ? strings + h->proctitle_off
+	                                  : (const char *)0;
 	out->has_identity = h->has_identity ? 1 : 0;
 	if (h->has_identity) {
 		if (h->identity.ngroups > TAWC_IDENTITY_NGROUPS)
