@@ -23,7 +23,6 @@ import androidx.core.app.ServiceCompat
 import me.phie.tawc.AppPaths
 import me.phie.tawc.BuildConfig
 import me.phie.tawc.MainActivity
-import me.phie.tawc.tasks.ProcessScanner
 import java.io.File
 import java.lang.ref.WeakReference
 import kotlinx.coroutines.CoroutineScope
@@ -33,7 +32,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 
 /**
@@ -309,6 +307,16 @@ class CompositorService : Service() {
         return null
     }
 
+    /**
+     * Notification "Exit": stop the compositor, close its windows, drop
+     * the foreground service. Scoped to the compositor on purpose — GUI
+     * clients die with the Wayland (and, through it, the X11) socket,
+     * and everything else in a rootfs is somebody else's lifetime:
+     * terminal shells and their jobs belong to
+     * [me.phie.tawc.terminal.TerminalActivity], and a stray daemon a GUI
+     * app spawned is stoppable from the task manager. A blanket guest
+     * SIGKILL here used to take those with it.
+     */
     private fun exitFromNotification(startId: Int) {
         if (lifecycle == Lifecycle.STOPPING) return
         lifecycle = Lifecycle.STOPPING
@@ -319,10 +327,6 @@ class CompositorService : Service() {
             toplevelCount.value = 0
             windowRegistry.clear()
             finishCompositorActivities()
-            withContext(Dispatchers.IO) {
-                ProcessScanner.killAllKnownRootfs(this@CompositorService) {
-                }
-            }
             if (restartAfterStop) {
                 lifecycle = Lifecycle.STOPPED
                 restartAfterStop = false

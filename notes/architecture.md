@@ -72,7 +72,11 @@ Kotlin side (`app/src/main/java/me/phie/tawc/`):
   exposes `primaryButton` (accent) / `destructiveButton` (red) factories.
 - **compositor/CompositorService.kt** -- Foreground service (`specialUse` type) that owns
   the Rust compositor thread. Activities bind to it; it tracks them by `activityId` so
-  reverse-JNI calls can find the right Activity.
+  reverse-JNI calls can find the right Activity. Its notification's "Exit" stops the
+  compositor and finishes the compositor activities, nothing else: GUI clients (and
+  Xwayland) die with the Wayland socket, while terminal shells, their jobs, and any
+  daemon a GUI app spawned keep running until the task manager or the app process
+  takes them.
 - **compositor/CompositorActivity.kt** -- One per Wayland window. Reads `activityId` from
   `intent.data?.lastPathSegment` (UUID under `tawc://activity/<id>`); falls back to
   `"primary"` for the launcher path. Forwards `SurfaceHolder` / touch / focus events
