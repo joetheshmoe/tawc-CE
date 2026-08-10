@@ -63,7 +63,9 @@ Kotlin side (`app/src/main/java/me/phie/tawc/`):
   launcher Activity can finish without killing the launched program. `Enter`
   launches the top filtered match.
 - **launcher/IconLoader.kt** -- Async PNG icon decoder for launcher rows.
-  Caches `path → Bitmap` so re-renders on filter keystrokes don't re-decode;
+  Caches `path → Bitmap` in a byte-bounded `LruCache` (an eighth of the heap,
+  floored at ~32 icons) so re-renders on filter keystrokes don't re-decode
+  without letting a big distro's icon set grow unbounded;
   `BitmapFactory.inSampleSize` keeps memory bounded for big source PNGs.
   ImageView.tag carries the requested path so a stale completion (rapid filter
   typing) doesn't slam the wrong bitmap into a recycled view.

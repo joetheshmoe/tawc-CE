@@ -31,7 +31,7 @@ and lets the user search + launch. Reached from the home screen card's
 5. **LauncherActivity** filters hidden entries + the search query, then
    renders rows (icon ImageView + name + comment). `IconLoader`
    async-decodes PNGs with `BitmapFactory.inSampleSize` keeping memory
-   bounded.
+   bounded, and holds them in a byte-bounded `LruCache`.
 6. Tap or Enter → `EntryLauncher.launch(appContext, inst, entry)`, the
    shared dispatch point for every launch surface. `Terminal=true`
    entries on tawcroot installs open `TerminalActivity` as a command
