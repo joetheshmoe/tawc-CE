@@ -220,7 +220,7 @@ The package is split into three layers:
 | `InstallationStore.kt`         | Filesystem layout + JSON metadata I/O. `setState` is the one entry point that writes the state field. |
 | `Su.kt`                        | Wrapper around Magisk `su`. Pipes the script via stdin (no shell-quoting headaches), streams combined stdout/stderr line-by-line via a callback. |
 | `Downloader.kt`                | HTTP downloader for bootstrap tarballs. Caches by content length. |
-| `SignatureVerifier.kt`         | Sealed `BootstrapVerification` (`None` / `Pgp` / `CrossMirrorMd5` / `Sha256`) and `verify(...)`. Called from [Installer] between download and extract — see *Bootstrap integrity* below. Uses BouncyCastle (`bcpg-jdk18on` + `bcprov-jdk18on`) for the OpenPGP layer. Treat as load-bearing security code. |
+| `SignatureVerifier.kt`         | Sealed `BootstrapVerification` (`ResolvedAtInstallTime` / `Pgp` / `CrossMirrorMd5` / `Sha256`) and `verify(...)`. Called from [Installer] between download and extract — see *Bootstrap integrity* below. Uses BouncyCastle (`bcpg-jdk18on` + `bcprov-jdk18on`) for the OpenPGP layer. Treat as load-bearing security code. |
 | `BootstrapCache.kt`            | Sole owner of `<cacheDir>/install/`. `download(arch, url, format, …)` is the single entry point: it mkdirs, fetches via [Downloader], and refreshes the file's mtime so the TTL counts from "last used" rather than "first downloaded". Also exposes `tempFifoFor(arch)` for [Archive]'s zstd→tar streaming FIFO so the transient lives in the cache dir under one owner. `sweepStale` runs a two-pass janitor: TTL eviction (7 days) for canonical `bootstrap-<cacheKey>.tar.{zst,gz}`; unconditional deletion of `*.fifo`, legacy `*.tmp`, and `*.part` (transients are never valid across processes). Also defines the `BootstrapFormat` enum. |
 | `Archive.kt`                   | Tar extraction. Plain `.tar` / `.tar.gz` get handed to `toybox tar` directly; `.tar.zst` is streamed in-process through a named pipe (`bootstrap-<cacheKey>.tar.fifo`) so the ~700 MB plaintext never lands on disk. Never wipes — install only runs against an empty slot. |
 | `RootfsCleaner.kt`             | The one and only delete path, for every install method: kill guest processes → unmount (chroot only) → refuse if any mount remains under the install dir → two-pass `find -xdev -depth -delete` (su-first for chroot, app-uid with one su retry otherwise). The chroot-only facts come from the metadata-recorded method key, not a live `InstallationMethod`, so disabled-method slots still wipe correctly. Used by uninstall; never by install. `RootfsCleanerTripwireTest` fails on recursive deletes elsewhere in the app sources. |
@@ -239,7 +239,7 @@ The package is split into three layers:
 | `distro/voidlinux/VoidLinuxX86_64.kt` | Void Linux x86_64 (glibc). Bootstrap is the dated `tar.xz` ROOTFS published under `live/current/`. |
 | `distro/voidlinux/VoidLinuxAarch64.kt` | Void Linux aarch64 (glibc). Same flow as the x86_64 flavour, different bootstrap URL and ABI. |
 | `distro/apt/AptCommon.kt`      | Shared apt-family helpers: deb822 sources, apt.conf, dpkg `path-exclude`, apt-family `/etc/profile.d/tawc.sh`, shell-default stubs, `apt-get update`, `apt-get dist-upgrade`, and base package install. |
-| `distro/debian/DebianDockerResolver.kt` | Fetches the Debian debuerreotype Docker artifact OCI manifest from the `dist-amd64` / `dist-arm64v8` branches and returns the `rootfs.tar.gz` URL plus layer SHA-256. |
+| `distro/debian/DebianDockerResolver.kt` | Pins the debuerreotype `dist-amd64` / `dist-arm64v8` branch tip to a commit SHA via the GitHub API, then fetches the OCI manifest at that commit and returns the `rootfs.tar.gz` URL plus layer SHA-256 — manifest and tarball are guaranteed to come from one tree state. |
 | `distro/debian/DebianSid.kt`   | Debian sid x86_64 / aarch64. Suite-driven apt-family implementation; future Debian suites should mostly be additional data objects. |
 | `util/HostArch.kt`             | `primaryAbi()` and `linuxArchFor(abi)` — the only place that knows the Android ABI ↔ Linux `uname -m` mapping. |
 | `util/HumanSize.kt`            | Byte-count → "1.2 MiB" formatter for download progress. |
@@ -700,15 +700,20 @@ add to it, not weaken it.
 
 Hard rules:
 
-- **Every [DistroBootstrap] must carry a real
-  [BootstrapVerification].** New distros do not get to ship with
-  `BootstrapVerification.None` — that variant exists only for cases
-  where neither PGP nor cross-mirror checksums are realistically
-  obtainable, and even then it logs a loud warning every install.
+- **Every [DistroBootstrap] that reaches the verify stage must carry
+  a concrete [BootstrapVerification].** There is deliberately no
+  "skip verification" variant. Distros whose digest is only known at
+  install time declare `BootstrapVerification.ResolvedAtInstallTime`
+  in their static `bootstrap` field, and their `resolveBootstrap()`
+  substitutes the real policy; the placeholder **fails closed** — if
+  it ever reaches `SignatureVerifier.verify` (an override dropped or
+  forgotten), the install throws instead of proceeding unverified.
   Before adding a new distro, find an upstream signature
-  (`<tarball>.sig` is the convention) or set up a cross-mirror
-  checksum cross-check; only fall back to `None` if you've actually
-  exhausted those.
+  (`<tarball>.sig` is the convention), a cross-mirror checksum
+  cross-check, or at minimum a server-side digest to resolve at
+  install time. A distro that genuinely cannot be verified would
+  need a new, loudly-named variant added back — treat that as a
+  security review, not a convenience.
 - **`SigLevel = Never` is gone from `pacman.conf` and stays gone.**
   Pacman runs with the upstream default
   (`Required DatabaseOptional`); `pacman-key --populate <keyring>`
@@ -733,10 +738,10 @@ Hard rules:
 | ALARM aarch64 (`fl.us.mirror.archlinuxarm.org`, HTTPS) | Cross-mirror MD5 cross-check: `.md5` fetched over HTTPS from `fl.us.` and `ca.us.` (independently-operated mirrors with their own valid certs), digests must agree byte-for-byte, then the tarball's MD5 must match | `BootstrapVerification.CrossMirrorMd5` in `ArchLinuxArm.kt` |
 | Manjaro ARM aarch64 (`github.com/manjaro-arm/rootfs/releases`, HTTPS) | SHA-256 from the GitHub Releases REST API: `api.github.com/repos/manjaro-arm/rootfs/releases/latest` returns the asset's server-computed `digest: sha256:<hex>`. We fetch that JSON over HTTPS in `ManjaroArm.resolveBootstrap`, then verify the downloaded tarball's SHA-256 matches before extract | `BootstrapVerification.Sha256` (Manjaro path) in `ManjaroArm.kt` |
 | Void Linux x86_64 / aarch64 glibc (`repo-default.voidlinux.org/live/current/`, HTTPS) | SHA-256 from upstream `sha256sum.txt`. We fetch the manifest over HTTPS in `VoidSha256Resolver.resolveLatest`, parse out the matching `void-<arch>-ROOTFS-*.tar.xz` line, and verify the downloaded tarball's SHA-256 matches before extract. Trust profile is the same single-HTTPS-endpoint stance as Manjaro ARM | `BootstrapVerification.Sha256` (Void path) in `VoidLinux{X86_64,Aarch64}.kt` |
-| Debian sid x86_64 / aarch64 (`raw.githubusercontent.com/debuerreotype/docker-debian-artifacts`, HTTPS) | SHA-256 from the official debuerreotype Docker artifact OCI manifest. We fetch `image-manifest.json` from the moving `dist-amd64` / `dist-arm64v8` branches, read the single gzip layer digest, then verify `rootfs.tar.gz` against it before extract. Trust profile is a single HTTPS endpoint plus OCI digest sanity check | `BootstrapVerification.Sha256` (Debian path) in `DebianSid.kt` / `DebianDockerResolver.kt` |
+| Debian sid x86_64 / aarch64 (`raw.githubusercontent.com/debuerreotype/docker-debian-artifacts`, HTTPS) | SHA-256 from the official debuerreotype Docker artifact OCI manifest. We resolve the `dist-amd64` / `dist-arm64v8` branch tip to a commit SHA via the GitHub API, fetch `image-manifest.json` at that pinned commit, read the single gzip layer digest, then verify `rootfs.tar.gz` (fetched from the same commit) against it before extract. Commit-pinning closes the mutable-branch race; the trust profile is still a single HTTPS origin (digest and tarball from the same repo) plus OCI digest sanity check | `BootstrapVerification.Sha256` (Debian path) in `DebianSid.kt` / `DebianDockerResolver.kt` |
 | In-chroot pacman packages | Default `SigLevel = Required DatabaseOptional`, against the keyring populated by `pacman-key --populate archlinux` / `archlinuxarm` / `archlinuxarm manjaro manjaro-arm` | `ArchPacmanCommon.kt` (the `Never` line was removed, `--populate` is no longer `\|\| true`'d) |
 
-### Manjaro ARM bootstrap: trust profile
+### Same-origin SHA-256 bootstraps (Manjaro / Void / Debian): trust profile
 
 Manjaro ARM is intermediate between the strong Arch x86_64 PGP path
 and the weaker ALARM cross-mirror MD5. Upstream doesn't sign with
@@ -761,10 +766,31 @@ What it does **not** catch:
   our check would still pass. Same threat as any HTTPS-distributed
   artifact without a separate offline-key signature chain.
 
-Stronger than `None`, weaker than `Pgp`, comparable in spirit to the
-ALARM cross-mirror MD5 (both rely on a single HTTPS endpoint's
-trust). When upstream Manjaro starts shipping a detached PGP
-signature we should switch over.
+Weaker than `Pgp`, comparable in spirit to the ALARM cross-mirror
+MD5 (both rely on a single HTTPS endpoint's trust). When upstream
+Manjaro starts shipping a detached PGP signature we should switch
+over.
+
+The same analysis applies to the other two `Sha256` distros, with
+one aggravating detail: their digest comes from the **same origin**
+as the tarball, so it is a corruption/host-swap check, not an
+integrity barrier against a compromised origin or a mis-issued cert.
+
+- **Void**: `sha256sum.txt` and the ROOTFS tarball both live on
+  `repo-default.voidlinux.org/live/current/`. Upstream also
+  publishes `sha256sum.sig` — an OpenBSD-signify (Ed25519) signature
+  over the checksum file, with per-release pubkeys in the
+  `void-release-keys` package (void-packages GitHub repo). Verifying
+  it would add a genuine second origin — see
+  issues/void-bootstrap-signify-verification.md.
+- **Debian sid**: digest and tarball both come from the
+  debuerreotype GitHub repo. The branch tip is commit-pinned via the
+  GitHub API before either fetch (closes the mutable-branch /
+  force-push race), but Debian publishes no out-of-band signature
+  for these artifacts, so the origin itself remains the trust root.
+  Post-extract, apt verifies every package against the
+  debian-archive-keyring shipped in the bootstrap, so the exposure
+  is the bootstrap alone.
 
 ### Known weaker spot: ALARM bootstrap
 
@@ -802,8 +828,8 @@ weakened.
 
 ### Verifier code
 
-- `SignatureVerifier.kt` — sealed `BootstrapVerification` (`None`,
-  `Pgp`, `CrossMirrorMd5`, `Sha256`) and
+- `SignatureVerifier.kt` — sealed `BootstrapVerification`
+  (`ResolvedAtInstallTime`, `Pgp`, `CrossMirrorMd5`, `Sha256`) and
   `verify(context, tarball, verification)`.
   Called from `Installer.install` between [BootstrapCache.download]
   and [Archive.extractAsRoot]. Throws `IOException` on any failure

@@ -21,8 +21,8 @@ import me.phie.tawc.install.distro.DistroBootstrap
  * subdomain to lie. This is weaker than PGP but materially better
  * than the previous plaintext-HTTP-no-check setup.
  *
- * Tracked in `issues/install-alarm-bootstrap-no-pgp.md`. Upgrade to
- * PGP when ALARM upstream starts signing.
+ * Upgrade to PGP when ALARM upstream starts signing — see
+ * notes/installation.md "Known weaker spot: ALARM bootstrap".
  */
 internal object ArchLinuxArm : Distro {
     override val key: String = Installation.DISTRO_ARCH

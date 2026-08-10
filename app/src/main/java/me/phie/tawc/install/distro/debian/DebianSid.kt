@@ -23,7 +23,7 @@ internal sealed class DebianSid(
         url = "https://raw.githubusercontent.com/debuerreotype/docker-debian-artifacts/dist-$bashbrewArch/sid/oci/blobs/rootfs.tar.gz",
         format = BootstrapFormat.GZIP,
         stripPrefix = null,
-        verification = BootstrapVerification.None,
+        verification = BootstrapVerification.ResolvedAtInstallTime,
     )
 
     final override fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy?): DistroBootstrap {

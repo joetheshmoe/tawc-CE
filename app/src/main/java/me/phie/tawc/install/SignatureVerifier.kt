@@ -32,13 +32,12 @@ import me.phie.tawc.R
  * enough to lay down inside the chroot the user then runs Wayland apps
  * in — see notes/installation.md "Bootstrap integrity".
  *
- * The current consumer is [me.phie.tawc.install.distro.arch.ArchLinuxX86_64],
+ * The PGP consumer is [me.phie.tawc.install.distro.arch.ArchLinuxX86_64],
  * whose `.tar.zst.sig` is signed by Pierre Schmitz's Arch developer
  * key (fingerprint `3E80 CA1A 8B89 F69C BA57  D98A 76A5 EF90 5444 9A5C`,
- * shipped at `res/raw/arch_signing_key.asc`).
- *
- * ALARM aarch64 has no upstream PGP signature — see [BootstrapVerification.None]
- * and the issue tracker for the remaining gap.
+ * shipped at `res/raw/arch_signing_key.asc`). The other distros use
+ * the weaker variants — see [BootstrapVerification] and
+ * notes/installation.md "Bootstrap integrity" for who declares what.
  */
 object SignatureVerifier {
     private const val TAG = "tawc-install"
@@ -66,15 +65,12 @@ object SignatureVerifier {
         mirrorProxy: me.phie.tawc.install.MirrorProxy? = null,
     ) {
         when (verification) {
-            BootstrapVerification.None -> {
-                Log.w(
-                    TAG,
-                    "Bootstrap NOT VERIFIED: ${tarball.name} — upstream " +
-                        "publishes no signature. See issue " +
-                        "install-alarm-bootstrap-no-pgp.md.",
-                )
-                return
-            }
+            BootstrapVerification.ResolvedAtInstallTime -> throw IOException(
+                "Bootstrap verification for ${tarball.name} is still the " +
+                    "ResolvedAtInstallTime placeholder — the distro's " +
+                    "resolveBootstrap() failed to substitute a real policy. " +
+                    "Refusing to extract an unverified bootstrap.",
+            )
 
             is BootstrapVerification.Pgp -> verifyPgp(context, tarball, verification, mirrorProxy)
             is BootstrapVerification.CrossMirrorMd5 -> verifyCrossMirrorMd5(tarball, verification, mirrorProxy)
@@ -89,9 +85,9 @@ object SignatureVerifier {
      * digest) — no PGP signature, no checksum sidecar, but the digest
      * is fetched from a single trusted HTTPS endpoint by the caller's
      * `resolveBootstrap` and passed in here. The integrity story is
-     * "trust this single TLS endpoint"; weaker than PGP, comparable
-     * in spirit to [None] with a sanity check that catches mid-
-     * download corruption / redirect-to-different-host.
+     * "trust this single TLS endpoint"; weaker than PGP — it catches
+     * mid-download corruption / redirect-to-different-host, but a
+     * compromised origin serves a matching tarball/digest pair.
      */
     private fun verifySha256(
         tarball: File,
@@ -374,13 +370,19 @@ object SignatureVerifier {
  */
 sealed class BootstrapVerification {
     /**
-     * Last-resort opt-out — no integrity check at all. Logs a loud
-     * warning every install. Reserved for cases where neither PGP nor
-     * cross-mirror checksums are available; do **not** use this for
-     * convenience. New distros must declare a real verification before
-     * being added — see notes/installation.md "Bootstrap integrity".
+     * Placeholder for distros whose real policy is only known at
+     * install time: the static [me.phie.tawc.install.distro.Distro.bootstrap]
+     * declares this, and `resolveBootstrap()` must replace it with a
+     * concrete variant (today always [Sha256] from a live digest
+     * lookup). **Fails closed**: if this value ever reaches
+     * [SignatureVerifier.verify] — a new distro forgot the override,
+     * or a refactor dropped it — the install throws instead of
+     * proceeding unverified. There is deliberately no "skip
+     * verification" variant; a distro that genuinely cannot be
+     * verified must add one back, visibly, and justify it against
+     * notes/installation.md "Bootstrap integrity".
      */
-    object None : BootstrapVerification()
+    object ResolvedAtInstallTime : BootstrapVerification()
 
     /**
      * Detached PGP signature at [signatureUrl], verified against the
@@ -413,8 +415,9 @@ sealed class BootstrapVerification {
      * `digest` field or an OCI manifest blob digest). Catches mid-
      * download corruption and redirect-to-different-host as a sanity
      * check; the security stance still rests on the TLS endpoint
-     * that produced the digest. Stronger than [None]; weaker than
-     * [Pgp] (no detached-key chain).
+     * that produced the digest — when that endpoint also serves the
+     * tarball (Void, Debian, Manjaro today), a compromised origin
+     * defeats it. Weaker than [Pgp] (no detached-key chain).
      */
     data class Sha256(
         val expectedHex: String,

@@ -9,8 +9,28 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
+/**
+ * Resolve the debuerreotype `docker-debian-artifacts` rootfs for a
+ * suite/arch: pin the `dist-<arch>` branch tip to a commit SHA via the
+ * GitHub API, then read the OCI `image-manifest.json` at that commit
+ * and return the `rootfs.tar.gz` URL plus its layer SHA-256.
+ *
+ * Trust boundary: the digest and the tarball come from the **same
+ * origin** (raw.githubusercontent.com, same repo). The SHA-256 check
+ * catches mid-download corruption and redirect-to-a-different-host; it
+ * is not a barrier against a compromised debuerreotype org or GitHub
+ * itself, which could serve a matching tarball/digest pair. Debian
+ * publishes no out-of-band signature for these artifacts. Commit-
+ * pinning closes the mutable-branch race (a force-push between our
+ * manifest fetch and tarball fetch, or a tampered tip serving mixed
+ * states) but does not change who we trust. Once extracted, apt
+ * verifies every package against the debian-archive-keyring shipped
+ * in the bootstrap, so the exposure is the bootstrap itself. See
+ * notes/installation.md "Bootstrap integrity".
+ */
 internal object DebianDockerResolver {
-    private const val RAW_BASE = "https://raw.githubusercontent.com/debuerreotype/docker-debian-artifacts"
+    private const val OWNER_REPO = "debuerreotype/docker-debian-artifacts"
+    private const val RAW_BASE = "https://raw.githubusercontent.com/$OWNER_REPO"
 
     fun resolve(
         suite: String,
@@ -18,7 +38,17 @@ internal object DebianDockerResolver {
         mirrorProxy: MirrorProxy?,
     ): DistroBootstrap {
         val branch = "dist-$bashbrewArch"
-        val base = "$RAW_BASE/$branch/$suite/oci/blobs"
+        // Pin the branch tip to an immutable commit so the manifest and
+        // the tarball are guaranteed to come from the same tree state.
+        val commitUrl = "https://api.github.com/repos/$OWNER_REPO/commits/$branch"
+        val sha = JSONObject(
+            downloadText(mirrorProxy?.wrap(commitUrl) ?: commitUrl, githubApi = true),
+        ).optString("sha").lowercase()
+        if (sha.length != 40 || !sha.all { it.isDigit() || it in 'a'..'f' }) {
+            throw IOException("GitHub commit lookup for $OWNER_REPO@$branch returned no usable sha ('$sha')")
+        }
+
+        val base = "$RAW_BASE/$sha/$suite/oci/blobs"
         val manifestUrl = "$base/image-manifest.json"
         val manifest = JSONObject(downloadText(mirrorProxy?.wrap(manifestUrl) ?: manifestUrl))
         val layers = manifest.getJSONArray("layers")
@@ -39,11 +69,18 @@ internal object DebianDockerResolver {
         )
     }
 
-    private fun downloadText(url: String): String {
+    private fun downloadText(url: String, githubApi: Boolean = false): String {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 30_000
             instanceFollowRedirects = true
+            if (githubApi) {
+                // Pin to a known API version so a GitHub-side schema
+                // change can't surprise us (same as GitHubReleaseResolver).
+                setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                setRequestProperty("User-Agent", "tawc-installer")
+            }
         }
         try {
             val code = conn.responseCode

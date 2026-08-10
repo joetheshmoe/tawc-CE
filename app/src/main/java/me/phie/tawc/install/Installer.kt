@@ -27,12 +27,11 @@ import java.io.InterruptedIOException
  *   3. VERIFYING            — [SignatureVerifier.verify] checks the
  *                             tarball against the distro's
  *                             [BootstrapVerification] policy (PGP
- *                             detached signature for Arch x86_64;
- *                             [BootstrapVerification.None] with a
- *                             loud warning for ALARM aarch64 since
- *                             upstream publishes no signature). On
- *                             mismatch the install fails before any
- *                             byte hits the rootfs.
+ *                             detached signature for Arch x86_64,
+ *                             cross-mirror MD5 for ALARM, resolved
+ *                             SHA-256 digest for Manjaro/Void/
+ *                             Debian). On mismatch the install fails
+ *                             before any byte hits the rootfs.
  *   4. EXTRACTING           — [InstallationMethod.extractBootstrap]
  *                             (chroot → toybox tar via su; proot →
  *                             pure-Kotlin [ProotArchiveExtractor]),
@@ -202,15 +201,14 @@ class Installer(
             }
 
             checkCancel()
-            // Stage 2: integrity check. PGP-verify the just-downloaded
+            // Stage 2: integrity check. Verify the just-downloaded
             // tarball against the distro's [BootstrapVerification] before
             // any byte hits the rootfs. Throws on mismatch / missing
-            // signature key / forged blob — and parks the install in
-            // FAILED upstream so the user can uninstall + retry from a
-            // clean tree. Distros that opt in to
-            // [BootstrapVerification.None] (e.g. ALARM, where upstream
-            // publishes no signature) get a loud warning and proceed —
-            // see notes/installation.md "Bootstrap integrity".
+            // signature key / forged blob / a leftover
+            // ResolvedAtInstallTime placeholder — and parks the install
+            // in FAILED upstream so the user can uninstall + retry from
+            // a clean tree. See notes/installation.md "Bootstrap
+            // integrity" for what each distro declares.
             progress(InstallProgress(
                 InstallStage.VERIFYING,
                 context.getString(R.string.install_progress_verifying_bootstrap),

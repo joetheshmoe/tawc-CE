@@ -45,9 +45,7 @@ internal object ManjaroArm : Distro {
         url = "https://github.com/manjaro-arm/rootfs/releases/latest/download/Manjaro-ARM-aarch64-latest.tar.gz",
         format = BootstrapFormat.GZIP,
         stripPrefix = null,
-        // Placeholder digest — never used. resolveBootstrap returns a
-        // fresh DistroBootstrap with the live SHA-256 from the API.
-        verification = BootstrapVerification.None,
+        verification = BootstrapVerification.ResolvedAtInstallTime,
     )
 
     override fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy?): DistroBootstrap {

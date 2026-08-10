@@ -32,7 +32,7 @@ internal sealed class VoidLinux(
         url = "https://repo-default.voidlinux.org/live/current/",
         format = BootstrapFormat.XZ,
         stripPrefix = null,
-        verification = BootstrapVerification.None,
+        verification = BootstrapVerification.ResolvedAtInstallTime,
     )
 
     final override fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy?): DistroBootstrap {

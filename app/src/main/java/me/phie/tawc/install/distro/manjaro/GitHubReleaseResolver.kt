@@ -54,8 +54,8 @@ internal object GitHubReleaseResolver {
                 )
             // The `digest` field looks like "sha256:abc123…". GitHub
             // sets this server-side at upload time. Bail loudly if
-            // it's missing — silently falling back to None on a hash
-            // we explicitly opted into would defeat the purpose.
+            // it's missing — silently skipping a hash check we
+            // explicitly opted into would defeat the purpose.
             val rawDigest = a.optString("digest")
                 .takeIf { it.isNotEmpty() }
                 ?: throw IOException(

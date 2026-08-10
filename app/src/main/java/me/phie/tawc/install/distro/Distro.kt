@@ -72,8 +72,10 @@ interface Distro {
      * single source of truth — [resolveBootstrap] just returns it. For
      * distros where the URL or expected digest is only known at install
      * time (e.g. GitHub Releases "latest" with a server-side
-     * SHA-256 in the API response), this can be a placeholder and
-     * [resolveBootstrap] does the runtime lookup.
+     * SHA-256 in the API response), this is a placeholder carrying
+     * [BootstrapVerification.ResolvedAtInstallTime] and
+     * [resolveBootstrap] does the runtime lookup. The placeholder
+     * fails closed: if it reaches the verify stage the install throws.
      */
     val bootstrap: DistroBootstrap
 
@@ -148,9 +150,10 @@ interface Distro {
  *   with `mv` after extraction when this is non-null.
  * @property verification integrity-check policy (PGP detached
  *   signature, etc.) consumed by [me.phie.tawc.install.SignatureVerifier]
- *   between download and extract. Distros must opt out explicitly via
- *   [BootstrapVerification.None] so the security stance of every
- *   bootstrap source is visible at the call site.
+ *   between download and extract. Every descriptor that reaches the
+ *   verify stage must carry a concrete policy; static placeholders use
+ *   [BootstrapVerification.ResolvedAtInstallTime], which throws there,
+ *   so a distro cannot end up unverified by omission.
  */
 data class DistroBootstrap(
     val url: String,
