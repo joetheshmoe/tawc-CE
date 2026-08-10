@@ -87,19 +87,26 @@ reserved fd range, not just as ordinary globals.
 
 Implementation contract:
 
-- Move all tawcroot-owned fds into a high reserved range during init
-  (for example `TAWCROOT_FD_BASE + n` via `fcntl(F_DUPFD_CLOEXEC)`),
-  store only those numbers in runtime state, and never allocate guest
-  fds from that range.
+- Place all tawcroot-owned fds at or above a high base during init
+  (`TAWCROOT_RESERVED_FD_BASE` via `fcntl(F_DUPFD_CLOEXEC, base)`) and
+  record the numbers in `tawcroot_reserved_fds[]`. The base is a
+  placement floor and a BPF fast-path floor, **not** a range we own:
+  the guest legitimately holds fds above it once it opens more than a
+  thousand, so every decision is an exact membership test. The two sets
+  stay disjoint for free — the kernel never hands out an fd number that
+  is already open.
 - Trap fd-control syscalls that can affect arbitrary fd numbers:
   `close`, `close_range`, `dup`, `dup2`, `dup3`, `fcntl`, and
   `pidfd_getfd` if present. Guest operations targeting internal fds
   must behave as if the fd does not exist (`-EBADF`) unless the call is
   issued by tawcroot itself through `tawcroot_raw_syscall()`.
-- For guest `dup*`/`fcntl(F_DUPFD*)`, choose results below the reserved
-  range when possible. If the guest explicitly asks for an fd inside
-  the reserved range, return `-EBADF`/`-EINVAL` in the same spirit as a
-  protected descriptor, not a live capability fd.
+- `close_range` must *split* around the reserved fds, not truncate at
+  the base: truncating silently leaves the guest's own high fds open.
+- `dup2`/`dup3` reject an explicit `newfd` that names a reserved fd
+  (`-EBADF`); `fcntl(F_DUPFD*)` needs no guard at all, since the kernel
+  only ever returns a free number.
+- A number tawcroot stops using must leave the table before its fd is
+  closed, or we would end up lying about a recycled guest descriptor.
 - Hide internal fds from `/proc/self/fd` and `/proc/self/fdinfo` views
   when we add proc synthesis. Until then, tests must at least cover
   that opening or closing internal fd numbers from the guest fails

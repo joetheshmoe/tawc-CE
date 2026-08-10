@@ -1345,8 +1345,12 @@ test(linkstore_store_open_reserve_failure_leaks_no_fds)
 	/* Force every tawcroot_fd_reserve to fail (table "full"): the
 	 * first mutation's store_open must close all four dirfds it
 	 * opened — the inverted cleanup gates leaked them into guest-
-	 * reachable numbers. th_teardown's fd-leak check is the assert. */
+	 * reachable numbers. th_teardown's fd-leak check is the assert.
+	 * Every slot must hold a live-looking fd (>= the base); a slot
+	 * below it reads as free and would be claimed. */
 	size_t saved = tawcroot_n_reserved_fds;
+	for (size_t i = saved; i < TAWCROOT_MAX_RESERVED_FDS; i++)
+		tawcroot_reserved_fds[i] = TAWCROOT_RESERVED_FD_BASE;
 	tawcroot_n_reserved_fds = TAWCROOT_MAX_RESERVED_FDS;
 	install_eperm_linkat();
 	long rv = th_sys(TAWC_SYS_linkat, AT_FDCWD, "/run/f",

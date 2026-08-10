@@ -257,15 +257,18 @@ not a to-do list** — live work lives in `issues/` and `plans/`.
 
 5. **~~Internal fd table and reserved range~~ — RESOLVED.**
    `include/fdtab.h` + `src/syscalls_fd.c`: tawcroot-owned fds are
-   duped above `TAWCROOT_RESERVED_FD_BASE` and `close`/`close_range`/
-   `dup`/`dup2`/`dup3`/`fcntl` are trapped so guest operations on them
-   behave as `-EBADF`. The BPF close fast path is a range compare on
-   `args[0]`, so fds reserved after filter install are covered too.
+   duped to `TAWCROOT_RESERVED_FD_BASE` or above and `close`/
+   `close_range`/`dup`/`dup2`/`dup3`/`fcntl` are trapped so guest
+   operations on *those specific fds* behave as `-EBADF`. The base is a
+   placement/fast-path floor only — guest fds above it are the guest's,
+   `close_range` splits around ours instead of truncating at the base,
+   and `fcntl(F_DUPFD*)` passes through unguarded. The BPF close fast
+   path is a range compare on `args[0]` (a deliberate superset of the
+   table), so fds reserved after filter install are covered too.
    `getdents64` hides reserved fds from `/proc/<pid>/fd` listings, which
    is what stops glibc's `closefrom` fallback looping forever.
    Exit criterion met: `close_range(3, ~0U, 0)` followed by an `open`
-   still translates. Residual sizing problem: see
-   `issues/tawcroot-reserved-fd-base-collides-with-guest-fds.md`.
+   still translates.
 
 6. **~~Guest `SIGSYS` and seccomp virtualization~~ — RESOLVED.**
    `src/signal_shadow.c` holds the guest-visible SIGSYS disposition

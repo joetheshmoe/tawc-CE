@@ -691,7 +691,7 @@ static long store_open(int create)
 		 * failing slot and every skipped one after it — the old
 		 * `&& prev >= 0` guards leaked all later fds into guest-
 		 * reachable low numbers). Already-reserved fds stay
-		 * reserved (the table has no remove) — harmless, idle. */
+		 * open and reserved — harmless, idle. */
 		if (r1 < 0) tawc_close((int)sfd);
 		if (r2 < 0) tawc_close((int)lfd);
 		if (r3 < 0) tawc_close((int)wfd);

@@ -66,15 +66,16 @@ long tawcroot_build_filter(struct sock_filter *prog, size_t prog_cap,
 
 	/* Load syscall_nr once, then linear JEQ + TRAP for each trap_nr.
 	 * `close` is special-cased to a RANGE compare: TRAP only when
-	 * args[0] >= reserved_fd_floor. This covers the entire reserved
-	 * half-space [floor, ∞) in a fixed five-instruction block, so fds
+	 * args[0] >= reserved_fd_floor. The range is a deliberate superset
+	 * of the reserved table — the handler makes the exact membership
+	 * decision and forwards the real close for anything else — so fds
 	 * reserved AFTER filter install (shm_open, post-chroot root fd)
-	 * are protected too — the earlier per-fd JEQ list baked in only
+	 * are protected too. The earlier per-fd JEQ list baked in only
 	 * the install-time set and let a guest close() of a runtime-
 	 * reserved fd through to the kernel (silent state corruption; see
 	 * issues/tawcroot-close-fastpath-misses-runtime-reserved-fds.md).
 	 * The fast path still skips the handler for the common closefrom
-	 * loop's low fds; only the ≤64 high fds in the loop now TRAP.
+	 * loop's low fds; the high ones TRAP and get forwarded.
 	 *
 	 * args[0] is a u64 fd; we compare the low 32 bits only (fds never
 	 * exceed INT_MAX, and a negative fd's 0xFFFF.... low word is ≥

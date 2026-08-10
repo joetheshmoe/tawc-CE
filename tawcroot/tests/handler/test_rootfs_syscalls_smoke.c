@@ -17,7 +17,7 @@
  *   - guest sigaction(SIGSYS) is shadowed; kernel disposition unchanged
  *   - guest sigprocmask can't actually block SIGSYS
  *   - guest seccomp installation fake-accepted (validated, not installed)
- *   - guest dup/dup2/dup3/fcntl(F_DUPFD) cap below TAWCROOT_RESERVED_FD_BASE
+ *   - guest dup/dup2/dup3/fcntl(F_DUPFD) refuse only the reserved fds
  *   - statx fake-root preserves stx_uid/stx_gid == 0
  *   - linkat falls back to symlink, renameat2/truncate/cwd round-trips, …
  *

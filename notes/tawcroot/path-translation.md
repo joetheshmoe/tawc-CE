@@ -495,16 +495,18 @@ below proot's ptrace round-trip.
 **Per-fd / per-arg BPF fast-paths.** Some trapped syscalls only do
 real work for a small subset of their argument values. The seccomp
 filter can `RET_ALLOW` the uninteresting calls so they never hit the
-handler. Today only `close` has one (JEQ ladder against
-`tawcroot_reserved_fds[]`; landed to fix the gpgme/`closefrom` death
-spiral, see history below). The same shape applies to others:
+handler. Today only `close` has one (a range compare on `args[0]`
+against `TAWCROOT_RESERVED_FD_BASE`; landed to fix the gpgme/`closefrom`
+death spiral, see history below). The same shape applies to others:
 
-- `fcntl`: `F_DUPFD`/`F_DUPFD_CLOEXEC` only need handling when arg2
-  ≥ `TAWCROOT_RESERVED_FD_BASE`; every other op only needs handling
-  when arg0 (fd) is in `tawcroot_reserved_fds[]`. Today's handler in
-  `syscalls_fd.c` already encodes this discrimination correctly; the
-  BPF doesn't yet, so glibc's TLS/locking, GnuTLS' fd-flag scrubbing,
-  and stdlib hot paths all trap unnecessarily on `F_GETFD`/`F_SETFD`.
+- `fcntl`: only needs handling when arg0 (fd) is at or above
+  `TAWCROOT_RESERVED_FD_BASE` — `F_DUPFD`/`F_DUPFD_CLOEXEC` included,
+  since the handler no longer restricts the requested minimum. Today's
+  handler in `syscalls_fd.c` already encodes this discrimination
+  correctly; the BPF doesn't yet, so glibc's TLS/locking, GnuTLS'
+  fd-flag scrubbing, and stdlib hot paths all trap unnecessarily on
+  `F_GETFD`/`F_SETFD`. The BPF block would be the same shape as
+  `close`'s: one range compare on `args[0]`.
 
 These are pure perf optimizations — add them when a workload is
 measurably handler-bound on the syscall in question (count

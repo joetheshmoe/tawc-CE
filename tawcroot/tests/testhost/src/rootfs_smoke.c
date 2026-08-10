@@ -2878,37 +2878,49 @@ static int test_ioctl_pty_translation(void)
 	return fails;
 }
 
-/* Internal-fd protection (Phase 0.5). The reserved range starts at
- * TAWCROOT_RESERVED_FD_BASE (1000); rootfs_fd is reserved at init.
- * From the guest's POV, every fd at/above the base does not exist:
- * close/dup/fcntl on it return -EBADF. close_range across the
- * boundary clamps. After the guest's most aggressive close attempt,
- * a path-bearing syscall must still work. */
+/* Internal-fd protection (Phase 0.5). tawcroot's own fds are placed at
+ * or above TAWCROOT_RESERVED_FD_BASE (1000); rootfs_fd is reserved at
+ * init. From the guest's POV those specific fds do not exist:
+ * close/dup/fcntl on them return -EBADF, and close_range skips them.
+ * Fds the guest itself holds above the base are NOT ours and must
+ * behave normally. After the guest's most aggressive close attempt, a
+ * path-bearing syscall must still work. */
 static int test_internal_fd_protection(void)
 {
 	int fails = 0;
 	long rv;
-	/* Trap close on the rootfs fd: returns success, and the
-	 * kernel actually closes the fd. (Earlier rev returned
-	 * -EBADF without closing, but glibc's `closefrom()`
-	 * — used by gpgme/libcurl/python pre-exec hygiene —
-	 * polled `/proc/self/fd` until empty, looped forever
-	 * because the lying-EBADF kept the fd in the table.
-	 * See `notes/tawcroot/phasing.md` "Phase 5c — full integration
-	 * suite, OnePlus 9".) The next path-bearing syscall lazy-
-	 * reopens via `tawcroot_reopen_reserved_fd()` from the
-	 * stashed `tawcroot_rootfs_host_path`. */
+	/* Trap close on the rootfs fd: the guest sees success, the fd
+	 * stays open. (An earlier rev returned -EBADF, but glibc's
+	 * `closefrom()` — used by gpgme/libcurl/python pre-exec hygiene —
+	 * polled `/proc/self/fd` until empty and looped forever because
+	 * the lying -EBADF kept the fd in the listing. The getdents64
+	 * filter is what makes the fake success safe; see
+	 * `notes/tawcroot/phasing.md` "Phase 5c — full integration suite,
+	 * OnePlus 9".) */
 	INLINE_SYS6(TAWC_SYS_close, (long)tawcroot_rootfs_fd,
 		    0, 0, 0, 0, 0, rv);
 	fails += tawc_io_step(
-		"close(rootfs_fd) -> 0 (kernel closes, lazy-reopen on next op)",
+		"close(rootfs_fd) -> 0 (faked; fd stays open)",
 		rv == 0);
 	tawc_io_kv_dec("    rv", rv);
 
-	/* close_range over a wide range that crosses the boundary:
-	 * clamps to base-1, kernel closes only guest-visible fds.
-	 * We start at fd 3 so stderr stays open and we can keep
-	 * printing test results after.
+	/* A guest fd above the base is the guest's own: fcntl(F_DUPFD)
+	 * with a minimum up there must succeed (it returned -EINVAL while
+	 * the whole half-space was claimed), and the fd must not be
+	 * mistaken for one of ours. close_range below then has to close
+	 * it — the trim-at-base shape leaked exactly these across exec. */
+	long guest_hi;
+	INLINE_SYS6(TAWC_SYS_fcntl, 2, 0 /*F_DUPFD*/,
+		    TAWCROOT_RESERVED_FD_BASE + 128, 0, 0, 0, guest_hi);
+	fails += tawc_io_step(
+		"fcntl(F_DUPFD, base+128) -> high guest fd",
+		guest_hi >= TAWCROOT_RESERVED_FD_BASE + 128);
+	tawc_io_kv_dec("    fd", guest_hi);
+
+	/* close_range over a wide range that crosses the boundary: the
+	 * handler splits around its own fds, so every guest fd in the
+	 * range dies and every reserved fd survives. We start at fd 3 so
+	 * stderr stays open and we can keep printing test results after.
 	 * close_range was added in kernel 5.9; on older kernels the
 	 * handler's raw syscall returns -ENOSYS. Skip rather than fail
 	 * (out-of-scope to polyfill new syscalls with older ones). */
@@ -2917,26 +2929,41 @@ static int test_internal_fd_protection(void)
 	bool close_range_unsupported = (rv == -38 /*ENOSYS*/);
 	if (close_range_unsupported) {
 		tawc_io_skip(
-			"close_range(3, ~0u) -> 0 (clamped at reserved boundary)",
+			"close_range(3, ~0u) -> 0 (splits around reserved fds)",
 			"kernel <5.9: close_range not available");
 	} else {
 		fails += tawc_io_step(
-			"close_range(3, ~0u) -> 0 (clamped at reserved boundary)",
+			"close_range(3, ~0u) -> 0 (splits around reserved fds)",
 			rv == 0);
 		tawc_io_kv_dec("    rv", rv);
 	}
 
-	/* close_range entirely above the boundary: success no-op. */
+	/* The guest's high fd is gone; ours (checked below) is not. */
+	if (close_range_unsupported) {
+		tawc_io_skip("close_range closed the guest's fd above the base",
+			     "kernel <5.9: close_range not available");
+	} else {
+		long gv;
+		INLINE_SYS6(TAWC_SYS_fcntl, guest_hi, 1 /*F_GETFD*/,
+			    0, 0, 0, 0, gv);
+		fails += tawc_io_step(
+			"close_range closed the guest's fd above the base",
+			gv == -9);
+		tawc_io_kv_dec("    rv", gv);
+	}
+
+	/* close_range entirely above the base: no reserved fd is harmed. */
 	if (close_range_unsupported) {
 		tawc_io_skip(
-			"close_range(reserved, ~0u) -> 0 (no-op)",
+			"close_range(base, ~0u) -> 0 (reserved fds skipped)",
 			"kernel <5.9: close_range not available");
 	} else {
 		INLINE_SYS6(TAWC_SYS_close_range,
 			    TAWCROOT_RESERVED_FD_BASE,
 			    0xffffffffu, 0, 0, 0, 0, rv);
 		fails += tawc_io_step(
-			"close_range(reserved, ~0u) -> 0 (no-op)", rv == 0);
+			"close_range(base, ~0u) -> 0 (reserved fds skipped)",
+			rv == 0);
 	}
 
 	/* fcntl(F_GETFD) on rootfs_fd: -EBADF. */
@@ -2955,7 +2982,7 @@ static int test_internal_fd_protection(void)
 	INLINE_SYS6(TAWC_SYS_dup2, 0,
 		    (long)tawcroot_rootfs_fd, 0, 0, 0, 0, rv);
 	fails += tawc_io_step(
-		"dup2(0, rootfs_fd) -> -EBADF (newfd in reserved range)",
+		"dup2(0, rootfs_fd) -> -EBADF (newfd is reserved)",
 		rv == -9);
 #endif
 

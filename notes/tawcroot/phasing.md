@@ -14,15 +14,19 @@
    doesn't inherit zygote filter; folded into Phase 4).
 - **Phase 0.5 — Runtime invariant protection**: ✓ DONE on x86_64
    emulator (Android 16, kernel 6.6); aarch64 cross-build clean.
-     • Internal fds (`rootfs_fd`, bind src_fds) reserved into a
-       high-numbered range (`TAWCROOT_RESERVED_FD_BASE = 1000`) at
-       init via `fcntl(F_DUPFD_CLOEXEC, base)`. From the guest's
-       perspective every fd ≥ 1000 returns -EBADF.
-     • Trapped + handled: `close`, `close_range` (clamps at the
-       reserved boundary so `close_range(0, ~0u)` only closes
-       guest-visible fds), `dup`, `dup2` (x86_64 only; aarch64 has
-       only dup3), `dup3`, `fcntl` (with F_DUPFD/F_DUPFD_CLOEXEC
-       capping the requested minimum at base-1).
+     • Internal fds (`rootfs_fd`, bind src_fds) reserved at or above
+       `TAWCROOT_RESERVED_FD_BASE = 1000` at init via
+       `fcntl(F_DUPFD_CLOEXEC, base)`. From the guest's perspective
+       every fd ≥ 1000 returns -EBADF. (Since superseded: the whole
+       half-space was never ours to claim, and claiming it broke
+       guests holding that many fds. Only the recorded fds are
+       refused now — see `include/fdtab.h`.)
+     • Trapped + handled: `close`, `close_range` (clamped at the
+       reserved boundary so `close_range(0, ~0u)` only closed
+       guest-visible fds — it now splits around the reserved fds
+       instead), `dup`, `dup2` (x86_64 only; aarch64 has only dup3),
+       `dup3`, `fcntl` (which then capped the F_DUPFD/F_DUPFD_CLOEXEC
+       minimum at base-1; no longer).
      • SIGSYS shadow: `rt_sigaction(SIGSYS, ...)` round-trips a
        guest-side `struct kernel_sigaction` shadow — the kernel
        disposition stays our handler. `rt_sigaction` for any other
@@ -676,6 +680,11 @@
              A guest fork-child losing its reserved fds is fine
              because the child is about to `execve`, and our
              exec_handler re-establishes them in `--exec-child`.
+             *(Later reversed, together with (c): `handle_close`
+             fake-succeeds again and the fd survives. What makes
+             that safe is the `getdents64` filter, which hides
+             reserved fds from `/proc/self/fd` so the closefrom loop
+             sees an empty list. See `src/syscalls_fd.c`.)*
         Plus a third piece in `path.c`:
           c. **Lazy re-open of reserved fds.** `path_translate`
              validates `tawcroot_rootfs_fd` and each

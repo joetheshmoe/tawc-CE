@@ -117,8 +117,16 @@ void th_view_teardown_impl(TestCtx *test_ctx, th_view *v)
 	 * binds + anything a handler reserved mid-test, e.g. a chroot swap
 	 * or shm fd). */
 	size_t n_binds = tawcroot_n_binds;
-	for (size_t i = 0; i < tawcroot_n_reserved_fds; i++)
-		close(tawcroot_reserved_fds[i]);
+	for (size_t i = 0; i < tawcroot_n_reserved_fds; i++) {
+		if (tawcroot_reserved_fds[i] >= TAWCROOT_RESERVED_FD_BASE)
+			close(tawcroot_reserved_fds[i]);
+	}
+	/* Free every slot, not just the ones below the count: a test that
+	 * faked a full table (test_linkstore) wrote past it, and
+	 * tawcroot_fd_record_reserved treats a live-looking slot as taken
+	 * regardless of the count. */
+	for (size_t i = 0; i < TAWCROOT_MAX_RESERVED_FDS; i++)
+		tawcroot_reserved_fds[i] = TAWCROOT_RESERVED_FD_NONE;
 	tawcroot_n_reserved_fds = 0;
 	tawcroot_n_binds = 0;
 	tawcroot_rootfs_fd = -1;

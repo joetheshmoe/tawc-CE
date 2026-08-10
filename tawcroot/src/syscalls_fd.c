@@ -35,31 +35,72 @@
 int    tawcroot_reserved_fds[TAWCROOT_MAX_RESERVED_FDS];
 size_t tawcroot_n_reserved_fds;
 
+/* The SIGSYS handler reads this table lock-free from sibling threads,
+ * and reserves happen from handler context too (shm_open, chroot swap,
+ * lazy linkstore fds, socket parents), so two guest threads can be in
+ * here at once. Claim a slot with a compare-exchange from "not live" to
+ * `fd`, then raise the reader-visible high-water mark; both stores are
+ * releases, and tawcroot_fd_is_reserved's acquire load of the count
+ * pairs with them. The window where the fd exists but is not yet
+ * published is inherent (the fd is born in the kernel before any store)
+ * — a sibling thread's close_fds-style sweep in exactly that instant
+ * can still close it; bounded, unfixable without stopping the world. */
+long tawcroot_fd_record_reserved(int fd)
+{
+	if (fd < TAWCROOT_RESERVED_FD_BASE) return TAWC_EINVAL;
+	for (size_t i = 0; i < TAWCROOT_MAX_RESERVED_FDS; i++) {
+		int slot = __atomic_load_n(&tawcroot_reserved_fds[i],
+					   __ATOMIC_RELAXED);
+		if (slot >= TAWCROOT_RESERVED_FD_BASE) continue;  /* live */
+		if (!__atomic_compare_exchange_n(&tawcroot_reserved_fds[i],
+						 &slot, fd, 0,
+						 __ATOMIC_RELEASE,
+						 __ATOMIC_RELAXED))
+			continue;  /* lost this slot to another thread */
+		size_t n = __atomic_load_n(&tawcroot_n_reserved_fds,
+					   __ATOMIC_RELAXED);
+		while (n < i + 1 &&
+		       !__atomic_compare_exchange_n(&tawcroot_n_reserved_fds,
+						    &n, i + 1, 0,
+						    __ATOMIC_RELEASE,
+						    __ATOMIC_RELAXED))
+			;
+		return 0;
+	}
+	return TAWC_ENOSPC;
+}
+
+void tawcroot_fd_forget_reserved(int fd)
+{
+	if (fd < TAWCROOT_RESERVED_FD_BASE) return;
+	size_t n = __atomic_load_n(&tawcroot_n_reserved_fds, __ATOMIC_ACQUIRE);
+	for (size_t i = 0; i < n; i++) {
+		int slot = __atomic_load_n(&tawcroot_reserved_fds[i],
+					   __ATOMIC_RELAXED);
+		if (slot != fd) continue;
+		/* Leave the high-water mark alone: the slot stays inside the
+		 * readers' scan range, holding a value no fd can equal. */
+		__atomic_store_n(&tawcroot_reserved_fds[i],
+				 TAWCROOT_RESERVED_FD_NONE, __ATOMIC_RELEASE);
+		return;
+	}
+}
+
 long tawcroot_fd_reserve(int fd)
 {
 	if (fd < 0) return TAWC_EBADF;
-	if (tawcroot_n_reserved_fds >= TAWCROOT_MAX_RESERVED_FDS) {
-		/* Table full: an unrecorded high fd would be invisible to
-		 * both the BPF close trap and tawcroot_fd_is_reserved —
-		 * i.e. not actually protected from the guest. Fail closed
-		 * rather than hand back a pseudo-reserved fd. */
-		return TAWC_ENOSPC;
-	}
 	long r = tawc_fcntl(fd, F_DUPFD_CLOEXEC, TAWCROOT_RESERVED_FD_BASE);
 	if (r < 0) return r;
+	/* Table full: an unrecorded high fd would be invisible to
+	 * tawcroot_fd_is_reserved — i.e. not actually protected from the
+	 * guest. Fail closed rather than hand back a pseudo-reserved fd,
+	 * dropping the dup and leaving the caller's original open. */
+	long rec = tawcroot_fd_record_reserved((int)r);
+	if (rec < 0) {
+		tawc_close((int)r);
+		return rec;
+	}
 	tawc_close(fd);
-	/* The SIGSYS handler reads this table lock-free from sibling
-	 * threads, and post-init reserves happen from handler context too
-	 * (shm_open, chroot swap, lazy linkstore fds): write the slot
-	 * first, publish the count with release order, so a concurrent
-	 * tawcroot_fd_is_reserved never reads a torn entry. The window
-	 * where the dup exists but is not yet published is inherent (the
-	 * fd is born in the kernel before any store) — a sibling thread's
-	 * close_fds-style sweep in exactly that instant can still close
-	 * it; bounded, unfixable without stopping the world. */
-	tawcroot_reserved_fds[tawcroot_n_reserved_fds] = (int)r;
-	__atomic_store_n(&tawcroot_n_reserved_fds,
-			 tawcroot_n_reserved_fds + 1, __ATOMIC_RELEASE);
 	return r;
 }
 
@@ -69,14 +110,14 @@ static long handle_close(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int fd = (int)args->a;
 	/* Reserved fds: lie. The guest sees success, our handler keeps the
 	 * fd alive for downstream path translation. Together with the
-	 * range rejections in close_range / dup2/3 / fcntl F_DUPFD this
-	 * makes our reserved fds un-killable from the guest, so handler-
-	 * side state for path translation can stay immutable post-init.
+	 * skip in close_range and the newfd check in dup2/3 this makes our
+	 * reserved fds un-killable from the guest, so handler-side state
+	 * for path translation can stay immutable post-init.
 	 *
-	 * The BPF filter normally routes close() here only for fds in the
-	 * init-time reserved set, but Android's stacked filter can TRAP
-	 * syscalls we didn't ask for — don't fake success for an fd that
-	 * isn't actually ours; forward the real close. */
+	 * The BPF close trap covers the whole half-space above the base,
+	 * which is a superset of the table (the guest's own high fds land
+	 * here too) — so don't fake success for an fd that isn't actually
+	 * ours; forward the real close. */
 	if (!tawcroot_fd_is_reserved(fd))
 		return TAWC_RAW(TAWC_SYS_close, fd, 0, 0, 0, 0, 0);
 	return 0;
@@ -90,15 +131,44 @@ static long handle_close_range(const tawcroot_syscall_args *args,
 	unsigned int last  = (unsigned int)args->b;
 	unsigned int flags = (unsigned int)args->c;
 
-	/* Entire range is above the reserved boundary → success no-op
-	 * (the guest sees no fds to close). */
-	if (first >= TAWCROOT_RESERVED_FD_BASE) return 0;
+	/* Close everything the guest asked for except our reserved slots:
+	 * walk the range upwards, issuing one close_range per gap between
+	 * them. With the ~8 reserved fds we ship (clustered right above the
+	 * base) a full `close_range(3, ~0U)` costs two kernel calls.
+	 *
+	 * Trimming `last` to the base instead — the old shape — silently
+	 * left every guest fd at or above the base open, i.e. an fd leak
+	 * across exec for exactly the programs careful enough to closefrom.
+	 * Splitting also gets CLOSE_RANGE_CLOEXEC right: our non-CLOEXEC
+	 * shm fds must not be swept into CLOEXEC. */
+	if (first > last)
+		return TAWC_RAW(TAWC_SYS_close_range, first, last, flags,
+				0, 0, 0);  /* kernel's EINVAL, verbatim */
 
-	/* Trim the upper end so the kernel never sees our reserved slots. */
-	if (last >= TAWCROOT_RESERVED_FD_BASE) {
-		last = TAWCROOT_RESERVED_FD_BASE - 1;
+	unsigned int cur = first;
+	for (;;) {
+		/* Lowest reserved fd in [cur, last], if any. */
+		unsigned int next = 0;
+		int have = 0;
+		size_t n = __atomic_load_n(&tawcroot_n_reserved_fds,
+					   __ATOMIC_ACQUIRE);
+		for (size_t i = 0; i < n; i++) {
+			int r = __atomic_load_n(&tawcroot_reserved_fds[i],
+						__ATOMIC_RELAXED);
+			if (r < 0) continue;  /* tombstone */
+			unsigned int u = (unsigned int)r;
+			if (u < cur || u > last) continue;
+			if (!have || u < next) { next = u; have = 1; }
+		}
+		if (!have || next > cur) {
+			long rv = TAWC_RAW(TAWC_SYS_close_range, cur,
+					   have ? next - 1 : last, flags,
+					   0, 0, 0);
+			if (rv < 0) return rv;
+		}
+		if (!have || next == last) return 0;
+		cur = next + 1;
 	}
-	return TAWC_RAW(TAWC_SYS_close_range, first, last, flags, 0, 0, 0);
 }
 
 static long handle_dup(const tawcroot_syscall_args *args, ucontext_t *uc)
@@ -125,7 +195,6 @@ static long handle_dup2(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int oldfd = (int)args->a;
 	int newfd = (int)args->b;
 	if (tawcroot_fd_is_reserved(oldfd) ||
-	    newfd >= (int)TAWCROOT_RESERVED_FD_BASE ||
 	    tawcroot_fd_is_reserved(newfd)) return TAWC_EBADF;
 	if (oldfd == newfd) {
 		long r = tawc_fcntl(oldfd, F_GETFD, 0);
@@ -141,12 +210,10 @@ static long handle_dup3(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int oldfd = (int)args->a;
 	int newfd = (int)args->b;
 	int flags = (int)args->c;
-	/* Reject the WHOLE reserved range for newfd, not just currently-
-	 * reserved slots: a guest-owned fd inside the range would be
-	 * skipped by close_range's trim and indistinguishable from ours
-	 * to future reservations. */
+	/* Only the fds we actually hold are off limits. `newfd` anywhere
+	 * else — including above the base — is the guest's to claim; the
+	 * kernel keeps the two sets disjoint from then on (fdtab.h). */
 	if (tawcroot_fd_is_reserved(oldfd) ||
-	    newfd >= (int)TAWCROOT_RESERVED_FD_BASE ||
 	    tawcroot_fd_is_reserved(newfd)) return TAWC_EBADF;
 	return TAWC_RAW(TAWC_SYS_dup3, oldfd, newfd, flags, 0, 0, 0);
 }
@@ -172,14 +239,10 @@ static long handle_fcntl(const tawcroot_syscall_args *args, ucontext_t *uc)
 	long a3 = args->c;
 	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
 
-	/* F_DUPFD/F_DUPFD_CLOEXEC: a dup landing in the reserved range
-	 * would hand the guest one of our slots. Refuse with EINVAL —
-	 * the same error the kernel gives when the requested minimum
-	 * exceeds RLIMIT_NOFILE — rather than silently trimming, which
-	 * would violate the "result >= arg" F_DUPFD contract. */
-	if (op == F_DUPFD || op == F_DUPFD_CLOEXEC) {
-		if (a3 >= TAWCROOT_RESERVED_FD_BASE) return TAWC_EINVAL;
-	}
+	/* F_DUPFD/F_DUPFD_CLOEXEC need no guard: the kernel returns the
+	 * lowest free fd at or above the requested minimum, and our
+	 * reserved fds are not free. (This used to -EINVAL any minimum at
+	 * or above the base, which broke guests holding that many fds.) */
 	return TAWC_RAW(TAWC_SYS_fcntl, fd, op, a3, 0, 0, 0);
 }
 

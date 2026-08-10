@@ -73,37 +73,48 @@ test(hosted_reserved_fd_dup_family_ebadf)
 		    TAWC_EBADF);
 	test_int_eq(th_sys(TAWC_SYS_fchdir, rfd, 0, 0, 0, 0, 0), TAWC_EBADF);
 
-	/* dup3 with a guest oldfd but a newfd inside the reserved range:
-	 * the whole range is rejected, not just live slots. */
+	/* dup3 onto a reserved newfd: -EBADF (would otherwise clobber). */
 	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/etc/probe",
 			 O_RDONLY, 0, 0, 0);
 	test_true(fd >= 0);
-	test_int_eq(th_sys(TAWC_SYS_dup3, fd, TAWCROOT_RESERVED_FD_BASE + 7,
-			   0, 0, 0, 0), TAWC_EBADF);
+	test_int_eq(th_sys(TAWC_SYS_dup3, fd, rfd, 0, 0, 0, 0), TAWC_EBADF);
 	test_int_eq(close((int)fd), 0);
 
 	th_teardown(&v);
 }
 
-test(hosted_fcntl_dupfd_into_reserved_range_einval)
+/* A guest fd above the base is the guest's, not ours: the dup/fcntl
+ * handlers must not reject it just for being high. Regression for
+ * issues/tawcroot-reserved-fd-base-collides-with-guest-fds.md, where the
+ * whole half-space [base, ∞) was claimed and any guest that opened more
+ * than ~1000 fds got -EBADF/-EINVAL on its own descriptors. */
+test(hosted_guest_fds_above_reserved_base_are_usable)
 {
 	th_view v;
-	th_setup(&v, "fd-dupfd");
+	th_setup(&v, "fd-highguest");
 
 	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/etc/probe",
 			 O_RDONLY, 0, 0, 0);
 	test_true(fd >= 0);
 
-	test_int_eq(th_sys(TAWC_SYS_fcntl, fd, F_DUPFD,
-			   TAWCROOT_RESERVED_FD_BASE, 0, 0, 0), TAWC_EINVAL);
-	test_int_eq(th_sys(TAWC_SYS_fcntl, fd, F_DUPFD_CLOEXEC,
-			   TAWCROOT_RESERVED_FD_BASE + 50, 0, 0, 0),
-		    TAWC_EINVAL);
+	/* F_DUPFD with a minimum above the base: the kernel picks a free
+	 * slot, which is never one of ours. */
+	long hi = th_sys(TAWC_SYS_fcntl, fd, F_DUPFD,
+			 TAWCROOT_RESERVED_FD_BASE + 128, 0, 0, 0);
+	test_true(hi >= TAWCROOT_RESERVED_FD_BASE + 128);
+	test_false(tawcroot_fd_is_reserved((int)hi));
 
-	/* Below the boundary it passes through. */
-	long dup_fd = th_sys(TAWC_SYS_fcntl, fd, F_DUPFD, 0, 0, 0, 0);
-	test_true(dup_fd >= 0 && dup_fd < TAWCROOT_RESERVED_FD_BASE);
-	test_int_eq(close((int)dup_fd), 0);
+	/* dup2/dup3 onto another high number the guest picked itself. */
+	int newfd = (int)hi + 3;
+	test_int_eq(th_sys(TAWC_SYS_dup3, fd, newfd, 0, 0, 0, 0), newfd);
+	struct stat st;
+	test_int_eq(fstat(newfd, &st), 0);
+
+	/* And the guest can close them again for real. */
+	test_int_eq(th_sys(TAWC_SYS_close, newfd, 0, 0, 0, 0, 0), 0);
+	test_int_eq(fstat(newfd, &st), -1);
+	test_int_eq(th_sys(TAWC_SYS_close, hi, 0, 0, 0, 0, 0), 0);
+	test_int_eq(fstat((int)hi, &st), -1);
 	test_int_eq(close((int)fd), 0);
 
 	th_teardown(&v);
@@ -111,37 +122,103 @@ test(hosted_fcntl_dupfd_into_reserved_range_einval)
 
 /* --- close_range: observed via the hook, never executed ----------------- */
 
-static long cr_seen_nr;
-static long cr_seen_args[6];
+#define CR_MAX_SEEN 8
+static size_t cr_n_seen;
+static unsigned int cr_seen[CR_MAX_SEEN][3];
 static bool cr_hook(long nr, const long args[6], long *ret)
 {
 	if (nr != TAWC_SYS_close_range) return false;
-	cr_seen_nr = nr;
-	memcpy(cr_seen_args, args, sizeof cr_seen_args);
+	if (cr_n_seen < CR_MAX_SEEN) {
+		cr_seen[cr_n_seen][0] = (unsigned int)args[0];
+		cr_seen[cr_n_seen][1] = (unsigned int)args[1];
+		cr_seen[cr_n_seen][2] = (unsigned int)args[2];
+	}
+	cr_n_seen++;
 	*ret = 0;
 	return true;
 }
 
-test(hosted_close_range_trims_at_reserved_boundary)
+/* The handler must close everything the guest asked for EXCEPT its own
+ * reserved slots — i.e. split the range around them rather than trim it
+ * at the base. Trimming left the guest's own fds above the base open
+ * (issues/tawcroot-reserved-fd-base-collides-with-guest-fds.md). */
+test(hosted_close_range_splits_around_reserved_fds)
 {
 	th_view v;
 	th_setup(&v, "fd-crange");
+	th_add_bind(&v, "/mnt/host");  /* a second reserved fd */
 
-	/* Entirely above the boundary: success no-op, no kernel call. */
-	cr_seen_nr = 0;
+	test_true(tawcroot_n_reserved_fds == 2);
+	unsigned int lo = (unsigned int)tawcroot_reserved_fds[0];
+	unsigned int hi = (unsigned int)tawcroot_reserved_fds[1];
+	if (lo > hi) { unsigned int t = lo; lo = hi; hi = t; }
+
+	/* Whole-table sweep: gaps below, between (unless the two fds are
+	 * adjacent, as they are in practice), and above our fds. */
+	long want_segs = hi == lo + 1 ? 2 : 3;
+	cr_n_seen = 0;
 	tawcroot_test_raw_hook = cr_hook;
-	test_int_eq(th_sys(TAWC_SYS_close_range,
-			   TAWCROOT_RESERVED_FD_BASE, ~0U, 0, 0, 0, 0), 0);
-	test_int_eq(cr_seen_nr, 0);  /* handler never issued the syscall */
+	test_int_eq(th_sys(TAWC_SYS_close_range, 3, ~0U, 0, 0, 0, 0), 0);
+	test_int_eq((long)cr_n_seen, want_segs);
+	test_int_eq(cr_seen[0][0], 3);
+	test_int_eq(cr_seen[0][1], lo - 1);
+	size_t k = 1;
+	if (hi != lo + 1) {
+		test_int_eq(cr_seen[k][0], lo + 1);
+		test_int_eq(cr_seen[k][1], hi - 1);
+		k++;
+	}
+	test_int_eq(cr_seen[k][0], hi + 1);
+	test_int_eq(cr_seen[k][1], ~0U);
 
-	/* Range crossing the boundary: `last` must be trimmed to
-	 * RESERVED_FD_BASE - 1 before the kernel sees it. */
-	test_int_eq(th_sys(TAWC_SYS_close_range, 700, ~0U, 0, 0, 0, 0), 0);
-	test_int_eq(cr_seen_nr, TAWC_SYS_close_range);
-	test_int_eq(cr_seen_args[0], 700);
-	test_int_eq(cr_seen_args[1], TAWCROOT_RESERVED_FD_BASE - 1);
+	/* Entirely above the base: still a real sweep of the guest's high
+	 * fds, minus our slots. Flags ride along on every segment. */
+	cr_n_seen = 0;
+	test_int_eq(th_sys(TAWC_SYS_close_range, hi + 1, ~0U, 4 /*CLOEXEC*/,
+			   0, 0, 0), 0);
+	test_int_eq((long)cr_n_seen, 1);
+	test_int_eq(cr_seen[0][0], hi + 1);
+	test_int_eq(cr_seen[0][1], ~0U);
+	test_int_eq(cr_seen[0][2], 4);
+
+	/* A range that is nothing but reserved fds issues no syscall. */
+	cr_n_seen = 0;
+	test_int_eq(th_sys(TAWC_SYS_close_range, lo, lo, 0, 0, 0, 0), 0);
+	test_int_eq((long)cr_n_seen, 0);
 
 	tawcroot_test_raw_hook = NULL;
+	th_teardown(&v);
+}
+
+/* The reserved fds themselves survive a guest sweep, and translation
+ * still works afterwards — the property the trim used to provide. */
+test(hosted_close_range_keeps_reserved_fds_alive)
+{
+	th_view v;
+	th_setup(&v, "fd-crange2");
+
+	/* A guest fd above the base must be closed by the sweep; the
+	 * rootfs fd must not. Both are high, so only exact membership can
+	 * tell them apart. */
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/etc/probe",
+			 O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	long guest_hi = th_sys(TAWC_SYS_fcntl, fd, F_DUPFD,
+			       TAWCROOT_RESERVED_FD_BASE + 64, 0, 0, 0);
+	test_true(guest_hi >= TAWCROOT_RESERVED_FD_BASE + 64);
+	test_int_eq(close((int)fd), 0);
+
+	test_int_eq(th_sys(TAWC_SYS_close_range, TAWCROOT_RESERVED_FD_BASE,
+			   ~0U, 0, 0, 0, 0), 0);
+
+	struct stat st;
+	test_int_eq(fstat((int)guest_hi, &st), -1);        /* guest's: closed */
+	test_int_eq(fstat(tawcroot_rootfs_fd, &st), 0);    /* ours: alive */
+	long probe = th_sys(TAWC_SYS_openat, AT_FDCWD, "/etc/probe",
+			    O_RDONLY, 0, 0, 0);
+	test_true(probe >= 0);
+	test_int_eq(close((int)probe), 0);
+
 	th_teardown(&v);
 }
 

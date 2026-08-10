@@ -143,20 +143,16 @@ static long reopen_for_guest(int internal_fd, int flags)
 			  (flags & O_CLOEXEC) ? F_DUPFD_CLOEXEC : F_DUPFD, 0);
 }
 
+/* Publish through fdtab's one entry point (it owns the memory ordering
+ * for the lock-free readers in the SIGSYS handler). A failure means the
+ * table was full: the fd stays usable internally but is NOT protected —
+ * tawcroot_fd_is_reserved won't recognise it, so the trapped close()
+ * forwards to the kernel and the guest really closes our memfd.
+ * Unreachable in practice (64 slots vs ≤ 33 live users, and shm_unlink
+ * gives its slot back). */
 static void add_to_reserved_list(int fd)
 {
-	if (tawcroot_n_reserved_fds >= TAWCROOT_MAX_RESERVED_FDS) {
-		/* Table full: the fd stays usable internally but is NOT
-		 * protected — tawcroot_fd_is_reserved won't recognise it, so
-		 * the trapped close() forwards to the kernel and the guest
-		 * really closes our memfd. Unreachable in practice (64 slots
-		 * vs ≤ 33 users). Fds reserved after filter install ARE
-		 * covered by the BPF close trap itself: it range-compares
-		 * args[0] against TAWCROOT_RESERVED_FD_BASE rather than
-		 * baking in the install-time set (filter_build.c). */
-		return;
-	}
-	tawcroot_reserved_fds[tawcroot_n_reserved_fds++] = fd;
+	(void)tawcroot_fd_record_reserved(fd);
 }
 
 long tawcroot_shm_open(const char *name, int flags, int mode)
@@ -259,12 +255,14 @@ long tawcroot_shm_unlink(const char *name)
 
 	/* Close our internal fd. The kernel-side memfd object stays
 	 * alive as long as the guest holds its dup — POSIX shm
-	 * "segment lives until the last fd closes" semantics. We don't
-	 * remove from `tawcroot_reserved_fds[]` (append-only); the now-
-	 * stale entry harmlessly extends the BPF close-trap fast-path,
-	 * which the handler-side check resolves correctly because the
-	 * fd is no longer in `g_shm`. */
-	if (internal_fd >= 0) (void)tawc_close(internal_fd);
+	 * "segment lives until the last fd closes" semantics. Drop the
+	 * reserved-table entry FIRST: once the fd is closed the kernel can
+	 * hand that number to the guest, and a stale entry would make us
+	 * lie about a descriptor the guest owns. */
+	if (internal_fd >= 0) {
+		tawcroot_fd_forget_reserved(internal_fd);
+		(void)tawc_close(internal_fd);
+	}
 	return 0;
 }
 
