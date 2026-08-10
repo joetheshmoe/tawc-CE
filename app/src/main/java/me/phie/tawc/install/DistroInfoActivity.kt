@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.text.InputType
 import android.text.format.Formatter
 import android.view.KeyEvent
+import android.view.View
 import android.view.WindowManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -279,11 +280,15 @@ class DistroInfoActivity : AppCompatActivity() {
         val pad = (16 * resources.displayMetrics.density).toInt()
         val input = EditText(this).apply {
             hint = getString(R.string.hint_run_command)
-            // VISIBLE_PASSWORD is the load-bearing flag for "no autocorrect" —
-            // Gboard ignores TYPE_TEXT_FLAG_NO_SUGGESTIONS on a plain CLASS_TEXT
-            // field and still autocorrects.
+            // URI variation kills Gboard autocorrect (which ignores
+            // TYPE_TEXT_FLAG_NO_SUGGESTIONS) like the old VISIBLE_PASSWORD
+            // trick, minus the password semantics: on a password-type field
+            // Firefox's autofill still threw an "Unlock Firefox" chip even
+            // with importantForAutofill=NO (verified on device 2026-08-09).
+            // The opt-out stays as a second layer.
             inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                InputType.TYPE_TEXT_VARIATION_URI
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
             isSingleLine = true
             imeOptions = EditorInfo.IME_ACTION_GO
             typeface = Typeface.MONOSPACE

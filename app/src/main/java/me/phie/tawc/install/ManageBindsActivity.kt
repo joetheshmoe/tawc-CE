@@ -8,6 +8,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.CheckBox
@@ -391,10 +392,13 @@ class ManageBindsActivity : AppCompatActivity() {
             isSingleLine = true
             typeface = Typeface.MONOSPACE
             textSize = 14f
-            // Same no-autocorrect trick as the run dialog: Gboard only
-            // honours it via VISIBLE_PASSWORD.
+            // URI variation kills Gboard autocorrect (which ignores
+            // TYPE_TEXT_FLAG_NO_SUGGESTIONS) without the password
+            // semantics that made autofill services throw unlock
+            // prompts over this dialog.
             inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                InputType.TYPE_TEXT_VARIATION_URI
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
         }
 
         val guestField = pathField(existing?.guestPath)
