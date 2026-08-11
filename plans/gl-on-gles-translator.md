@@ -29,6 +29,32 @@ ourselves, against ES 3.x" option.
   and `test_es2gears_x11_renders_via_ahb`). The translator is a pure
   client-side library; the compositor needs nothing new.
 
+## Measured: SDL apps are blocked by the EGL half alone
+
+Worth knowing before scoping: for SDL apps the *whole* gap is the
+config/context lie in layer 1's interposer — no translation needed.
+Measured 2026-08-10 on physical (Arch, libhybris, Adreno 660):
+
+- SDL3 defaults `gl_config` to desktop GL 2.1 (`SDL_GL_ResetAttributes`
+  picks `profile_mask = 0` whenever `SDL_VIDEO_OPENGL` is built in, as
+  Arch's is). So `SDL_CreateWindow(SDL_WINDOW_OPENGL)` asks
+  `eglChooseConfig` for `EGL_RENDERABLE_TYPE = EGL_OPENGL_BIT`.
+- libhybris/Android EGL answers `EGL_BAD_ATTRIBUTE` (0x3004, 0 configs)
+  for that bit; `EGL_OPENGL_ES2_BIT` and `EGL_OPENGL_ES_BIT` both give
+  48 configs on the same display. Not a token it fails to parse, and
+  not a platform-display mismatch — the fork's `eglGetPlatformDisplay`
+  returns the same handle as `eglGetDisplay`.
+- That single failure kills `SDL_CreateWindow` before any renderer
+  exists, which is where SDL games die today.
+- Everything after it is already fine: with the ES profile set
+  explicitly, window + context + 60 swapped frames + clean teardown all
+  work, on `OpenGL ES 3.2 / Adreno 660`.
+- And SDL self-heals once the window exists: `GLES2_CreateRenderer`
+  sets the ES profile and calls `SDL_ReconfigureWindow`, so the app
+  ends up on an honest ES context. Apps pinned to SDL's `opengl`
+  renderer still need the translator; apps that accept `opengles2` need
+  only the interposer.
+
 ## Shape
 
 Target: **GL 3.3 core profile** honestly advertised (extensions added
