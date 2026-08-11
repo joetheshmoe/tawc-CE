@@ -4,6 +4,7 @@ Future work and speculative implementation plans live here. Keep current-state
 design, build, and operational notes in [`../notes/`](../notes/).
 
 - [usecase_tests/](usecase_tests/README.md) - one-shot agent-run usecase test plans; see that README for the procedure.
+- [alarm-package-bootstrap.md](alarm-package-bootstrap.md) - packages bootstrap flavor for Arch Linux ARM (pacman as the workspace guest, per-package sigs against the shipped build-system key; smaller install, weaker index trust than Debian's — documented).
 - [ando-am.md](ando-am.md) - termux-am-style in-app `am` behind broker interception of `ando am`, so unrooted guests can launch activities/broadcasts/services.
 - [audio.md](audio.md) - planned PipeWire/PulseAudio bridge to Android audio.
 - [clipboard-paste-focus-gate.md](clipboard-paste-focus-gate.md) - only serve the Android clipboard to the focused client; today any X11 client on the shared Xwayland can read it.
