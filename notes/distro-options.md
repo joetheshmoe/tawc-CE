@@ -11,6 +11,31 @@ aarch64). This note exists because ALARM is
 under-maintained and somewhat bloated for our needs, and we keep
 getting asked "what about $distro?".
 
+## Which distros are supported
+
+Only two, for users:
+
+- **Arch Linux ARM** (aarch64)
+- **Debian sid** (aarch64, and x86_64 for the emulator)
+
+Everything else — Manjaro ARM, Void Linux, and Arch Linux x86_64 —
+still ships in every build (release included) but is dev /
+experimental: less tested, and free to break. Arch Linux x86_64 is
+flagged supported in the code purely because it is the emulator's
+stand-in for ALARM (there is no aarch64 emulator path), so the
+emulator dev loop mirrors the phone's default; no user runs an
+x86_64 Android device.
+
+Mechanically this is the `Distro.supported` flag, surfaced only in
+the UI: the install form lists supported distros directly and hides
+the rest behind an "Other distros" expander (see
+[distro-abstraction.md](distro-abstraction.md) → *Supported vs
+other*). The install pipeline itself treats all distros identically.
+
+Practical consequence: new work — testing, GPU/browser bring-up,
+issue triage — targets ALARM and Debian sid first. A bug that only
+reproduces on Void or Manjaro is not release-blocking.
+
 **Manjaro ARM** is the most recent addition — also pacman-based, so
 it reuses ~all of `ArchPacmanCommon` (mirrorlist + keyring set are
 the only real differences). Bootstrap is the official

@@ -45,6 +45,14 @@ class InstallActivity : AppCompatActivity() {
     private val store by lazy { InstallationStore(this) }
     private var selectedMethod: String? = null
     private var selectedDistro: String? = null
+
+    /** (distro key, radio) for every rendered distro option; the
+     *  picker manages exclusivity across the supported/other split
+     *  itself. See [buildDistroPicker]. */
+    private val distroRadios = mutableListOf<Pair<String, RadioButton>>()
+    private var otherDistrosExpanded = false
+    private var otherDistroList: LinearLayout? = null
+    private var otherDistroToggle: MaterialButton? = null
     private var labelEdited: Boolean = false
 
     /**
@@ -96,7 +104,6 @@ class InstallActivity : AppCompatActivity() {
     private lateinit var formScroll: ScrollView
     private lateinit var formSection: LinearLayout
     private lateinit var methodGroup: RadioGroup
-    private lateinit var distroGroup: RadioGroup
     private lateinit var labelField: EditText
     private lateinit var locationLabel: TextView
     private lateinit var installButton: MaterialButton
@@ -115,6 +122,7 @@ class InstallActivity : AppCompatActivity() {
         selectedMethod = savedInstanceState?.getString(KEY_METHOD)
         selectedDistro = savedInstanceState?.getString(KEY_DISTRO)
         selectedBootstrap = savedInstanceState?.getString(KEY_BOOTSTRAP)
+        otherDistrosExpanded = savedInstanceState?.getBoolean(KEY_OTHER_DISTROS) == true
         labelEdited = savedInstanceState?.getBoolean(KEY_LABEL_EDITED) == true
         useCacheProxy = when {
             savedInstanceState?.containsKey(KEY_USE_PROXY) == true ->
@@ -163,6 +171,7 @@ class InstallActivity : AppCompatActivity() {
         selectedMethod?.let { outState.putString(KEY_METHOD, it) }
         selectedDistro?.let { outState.putString(KEY_DISTRO, it) }
         selectedBootstrap?.let { outState.putString(KEY_BOOTSTRAP, it) }
+        outState.putBoolean(KEY_OTHER_DISTROS, otherDistrosExpanded)
         useCacheProxy?.let { outState.putBoolean(KEY_USE_PROXY, it) }
         outState.putBoolean(KEY_ANDO, andoEnabled)
         outState.putString(KEY_BINDS, ExternalBind.toJsonArray(pendingBinds).toString())
@@ -177,10 +186,8 @@ class InstallActivity : AppCompatActivity() {
         // the service-level gate refuse the install if the user taps
         // anyway.
         val available = DistroRegistry.availableForHost()
-        val initialDistro = (selectedDistro ?: available.firstOrNull()?.key)
-        selectedDistro = initialDistro
 
-        s.addView(buildDistroPicker(available, pad), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+        s.addView(buildDistroPicker(available), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
 
         // Dev-only bootstrap-flavor radio row, between the distro
         // picker and the label field. Rendered only when the selected
@@ -259,13 +266,19 @@ class InstallActivity : AppCompatActivity() {
     }
 
     /**
-     * Build the distro picker. Lists every [Distro] whose Android ABI
-     * matches the host. Defaults to the first ABI-matching entry
-     * unless saved state nudges otherwise. Hidden when only one distro
-     * matches (the first-class case before Manjaro) so we don't render
-     * a single-choice radio group.
+     * Build the distro picker. The two supported distros
+     * ([Distro.supported]) sit at the top; everything else the APK
+     * ships hides behind an "Other distros" expander, collapsed
+     * unless the current pick lives in there. Distros whose Android
+     * ABI doesn't match the host aren't listed at all. With no
+     * unsupported distros for this host it degrades to a flat list
+     * (no expander).
+     *
+     * Radios are driven by hand rather than by a [RadioGroup] because
+     * the selection spans two containers — a RadioGroup only
+     * un-checks its own direct children.
      */
-    private fun buildDistroPicker(available: List<Distro>, pad: Int): LinearLayout {
+    private fun buildDistroPicker(available: List<Distro>): LinearLayout {
         val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val title = TextView(this).apply { text = getString(R.string.install_distro_label); textSize = 14f }
         container.addView(title, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
@@ -280,43 +293,94 @@ class InstallActivity : AppCompatActivity() {
             return container
         }
 
-        distroGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val idsByKey = mutableMapOf<Int, String>()
-        for (d in available) {
-            val rid = View.generateViewId()
-            idsByKey[rid] = d.key
-            val rb = RadioButton(this).apply {
-                id = rid
-                text = d.displayName
-            }
-            distroGroup.addView(rb, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-        }
-        container.addView(distroGroup, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        distroRadios.clear()
+        val supported = available.filter { it.supported }
+        val other = available.filterNot { it.supported }
 
+        // available is supported-first, so the fallback pick is a
+        // supported distro whenever there is one.
         val initialKey = selectedDistro?.takeIf { k -> available.any { it.key == k } }
             ?: available.first().key
-        selectedDistro = initialKey
-        idsByKey.entries.firstOrNull { it.value == initialKey }?.let { distroGroup.check(it.key) }
 
-        distroGroup.setOnCheckedChangeListener { _, checkedId ->
-            idsByKey[checkedId]?.let {
-                selectedDistro = it
-                // Flavor picks don't transfer across distros — reset
-                // to the new distro's supported default and rebuild
-                // the (dev-only) radio row.
-                selectedBootstrap = null
-                updateBootstrapRow()
-                // Auto-update the label default when the user hasn't
-                // typed anything custom yet — flipping from "Arch Linux
-                // (x86)" to "Arch Linux ARM" should follow.
-                if (!labelEdited) {
-                    val d = available.firstOrNull { it.key == selectedDistro }
-                    if (d != null) setLabelTextSilently(d.defaultLabel)
-                }
-                revalidate()
-            }
+        for (d in supported) {
+            container.addView(distroRadio(d), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
         }
+
+        if (other.isNotEmpty()) {
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            list.addView(captionView(getString(R.string.install_distro_other_note)))
+            for (d in other) {
+                list.addView(distroRadio(d), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            }
+            otherDistroList = list
+            val toggle = MaterialButton(
+                this, null, com.google.android.material.R.attr.borderlessButtonStyle,
+            ).apply {
+                setTextColor(getColor(R.color.tawc_accent))
+                setOnClickListener { setOtherDistrosExpanded(!otherDistrosExpanded) }
+            }
+            otherDistroToggle = toggle
+            container.addView(toggle, verticalLp(WRAP_CONTENT, WRAP_CONTENT))
+            container.addView(list, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            // Never hide the current pick behind a collapsed expander.
+            setOtherDistrosExpanded(
+                otherDistrosExpanded || other.any { it.key == initialKey },
+            )
+        }
+
+        selectDistro(initialKey, updateLabel = false)
         return container
+    }
+
+    /** Quiet caption line under the "Other distros" expander. */
+    private fun captionView(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 12f
+        setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
+    }
+
+    /** One distro radio, registered in [distroRadios] for exclusivity. */
+    private fun distroRadio(d: Distro): RadioButton {
+        val rb = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = d.displayName
+            setOnClickListener { selectDistro(d.key, updateLabel = true) }
+        }
+        distroRadios.add(d.key to rb)
+        return rb
+    }
+
+    /**
+     * Make [key] the pick: check its radio, clear the rest, and (when
+     * the user hasn't typed a custom label) follow the distro's default
+     * label so flipping from "Arch Linux ARM" to "Debian Sid" updates
+     * the install directory too.
+     */
+    private fun selectDistro(key: String, updateLabel: Boolean) {
+        val changed = key != selectedDistro
+        selectedDistro = key
+        for ((k, rb) in distroRadios) rb.isChecked = (k == key)
+        if (changed) {
+            // Flavor picks don't transfer across distros — reset to the
+            // new distro's supported default and rebuild the (dev-only)
+            // radio row. Guarded on an actual change so a restored
+            // selection keeps its saved flavor.
+            selectedBootstrap = null
+            updateBootstrapRow()
+        }
+        if (updateLabel && !labelEdited) {
+            DistroRegistry.availableForHost().firstOrNull { it.key == key }
+                ?.let { setLabelTextSilently(it.defaultLabel) }
+        }
+        revalidate()
+    }
+
+    private fun setOtherDistrosExpanded(expanded: Boolean) {
+        otherDistrosExpanded = expanded
+        otherDistroList?.visibility = if (expanded) View.VISIBLE else View.GONE
+        otherDistroToggle?.text = getString(
+            if (expanded) R.string.install_distro_other_hide else R.string.install_distro_other_show,
+        )
     }
 
     /**
@@ -631,6 +695,7 @@ class InstallActivity : AppCompatActivity() {
         private const val DEFAULT_PROXY_URL = "http://127.0.0.1:8080/proxy/"
         private const val KEY_METHOD = "tawc.install.method"
         private const val KEY_DISTRO = "tawc.install.distro"
+        private const val KEY_OTHER_DISTROS = "tawc.install.otherDistrosExpanded"
         private const val KEY_LABEL_EDITED = "tawc.install.labelEdited"
         private const val KEY_LABEL_TEXT = "tawc.install.labelText"
         private const val KEY_USE_PROXY = "tawc.install.useCacheProxy"

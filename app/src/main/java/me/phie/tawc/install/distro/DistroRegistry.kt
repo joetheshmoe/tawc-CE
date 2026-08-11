@@ -51,12 +51,23 @@ object DistroRegistry {
 
     /**
      * Distros that can be installed on this host (matching the host's
-     * primary Android ABI). The install activity uses this for its
-     * distro radio; the service uses [forKey] to resolve the user's
-     * pick.
+     * primary Android ABI), supported ones first. The install activity
+     * uses this for its distro radio; the service uses [forKey] to
+     * resolve the user's pick.
      */
     fun availableForHost(): List<Distro> =
         all.filter { it.androidAbi == HostArch.primaryAbi() }
+            .sortedByDescending { it.supported }
+
+    /**
+     * The distros we actually support for users (see [Distro.supported]),
+     * installable on this host. The install form lists these directly;
+     * [otherForHost] goes behind an expander.
+     */
+    fun supportedForHost(): List<Distro> = availableForHost().filter { it.supported }
+
+    /** Host-installable distros that are shipped but not supported. */
+    fun otherForHost(): List<Distro> = availableForHost().filterNot { it.supported }
 
     /**
      * Distro auto-selected for a fresh install on this host when the

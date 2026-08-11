@@ -118,6 +118,28 @@ becomes the `BootstrapVerification.Sha256` argument passed back into
 the installer. The Arch impls don't override; they keep their static
 PGP verification.
 
+## Supported vs other
+
+`Distro.supported` (default false) marks the distros we actually
+support for users: Arch Linux ARM, Debian sid (both arches), and Arch
+Linux x86_64 as the emulator stand-in for ALARM. See
+[distro-options.md](distro-options.md) → *Which distros are
+supported* for the policy.
+
+It is a **UI/policy label only** — nothing in the install pipeline
+reads it. The install form (`InstallActivity.buildDistroPicker`)
+lists supported distros directly and puts the rest behind an "Other
+distros" expander ("Less tested and not officially supported"),
+collapsed unless the current pick lives in there. Both groups ship in
+release builds.
+`DistroRegistry.availableForHost()` sorts supported-first, so
+`defaultForHost()` (broker installs without `distro=`, and the form's
+initial pick) lands on a supported distro whenever one exists.
+
+The picker drives its radios by hand instead of using a `RadioGroup`:
+the selection spans two containers and a `RadioGroup` only un-checks
+its own direct children.
+
 ## `DistroRegistry`
 
 ```kotlin

@@ -44,6 +44,12 @@ doesn't ship, the install form hides the picker entirely when only one
 method is enabled, and any APK that doesn't ship proot drops
 `libproot.so` / `libproot-loader.so` at packaging time.
 
+Distros are not build-gated the same way: every build ships all of
+them, but the install form splits them into the two supported ones
+and an "Other distros" expander (`Distro.supported`, see
+[distro-options.md](distro-options.md) → *Which distros are
+supported*).
+
 ## On-disk layout
 
 Everything lives under the app's private data dir:
@@ -229,7 +235,7 @@ The package is split into three layers:
 | `ChrootMounter.kt`             | Builds the bind-mount shell snippet (`mountScript`) used by [ChrootMethod.startInside], and provides defensive-cleanup `unmount` (used by [RootfsCleaner]). Mounts live inside a single `su` invocation's private namespace, not globally. |
 | `Installer.kt`                 | Generic install/uninstall orchestrator. Drives `setState(INSTALLING) → BootstrapCache.download → Archive.extractAsRoot → distro.configure → distro.initPackageManager → distro.installBasePackages → setState(READY)`. Distro-agnostic; per-distro behaviour comes from the [Distro] passed in. |
 | `distro/Distro.kt`             | Interface for a (distro × Linux arch). Owns `bootstrap` (URL/format/stripPrefix/verification), `cacheKey`, `basePackages`, the three policy hooks (`configure`, `initPackageManager`, `installBasePackages`), and `resolveBootstrap()` for distros with install-time URL/digest lookup (Manjaro/Void/Debian). Also defines `DistroBootstrap`. |
-| `distro/DistroRegistry.kt`     | The only place that maps `(metadata.distro, metadata.arch)` → [Distro], `Build.SUPPORTED_ABIS` → installable [Distro] list, and the install activity's distro radio key → [Distro]. `availableForHost()` / `defaultForHost()` / `forKey()`. |
+| `distro/DistroRegistry.kt`     | The only place that maps `(metadata.distro, metadata.arch)` → [Distro], `Build.SUPPORTED_ABIS` → installable [Distro] list, and the install activity's distro radio key → [Distro]. `availableForHost()` (supported-first) / `supportedForHost()` / `otherForHost()` / `defaultForHost()` / `forKey()`. |
 | `distro/arch/ArchPacmanCommon.kt` | Helpers shared by every Arch / Manjaro flavour: pacman.conf munging (SigLevel/DisableSandbox/CheckSpace/IgnorePkg), mirrorlist write, the `pacman-key --init` boilerplate, and `pacman -Syu` / `pacman -S --needed`. Also exports the canonical `DEFAULT_BASE_PACKAGES` list. |
 | `distro/arch/ArchLinuxX86_64.kt` | Arch Linux x86_64 (`pkgbuild.com` zstd bootstrap, `archlinux` keyring, geo-redirector mirrorlist). |
 | `distro/arch/ArchLinuxArm.kt`  | Arch Linux ARM aarch64 (`archlinuxarm.org` gzip bootstrap, `archlinuxarm` keyring, curated multi-mirror list — see *ALARM mirror failover* below). |

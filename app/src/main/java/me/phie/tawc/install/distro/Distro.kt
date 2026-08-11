@@ -32,6 +32,17 @@ interface Distro {
     val displayName: String
 
     /**
+     * Whether this distro is one we actually support for users.
+     * Supported distros are Arch Linux ARM and Debian sid (plus Arch
+     * Linux x86_64, the emulator-only stand-in for ALARM); everything
+     * else ships but is dev/experimental and hides behind the install
+     * form's "Other distros" expander. Purely a UI/policy label — the
+     * install pipeline treats every distro identically. See
+     * notes/distro-options.md.
+     */
+    val supported: Boolean get() = false
+
+    /**
      * Short label used as the install-form Label default and as the
      * basis of the on-disk id slug (e.g. `"Arch"`, `"Manjaro"`).
      * Must be slugifiable via [Installation.slugifyLabel] so the

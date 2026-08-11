@@ -25,6 +25,7 @@ import me.phie.tawc.install.distro.TarballBootstrap
 internal object ArchLinuxArm : Distro {
     override val key: String = Installation.DISTRO_ARCH
     override val displayName: String = "Arch Linux ARM"
+    override val supported: Boolean = true
     override val defaultLabel: String = "Arch"
     override val linuxArch: String = "aarch64"
     override val androidAbi: String = "arm64-v8a"

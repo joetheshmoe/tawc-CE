@@ -22,6 +22,7 @@ internal sealed class DebianSid(
 ) : Distro {
     final override val key: String = Installation.DISTRO_DEBIAN_SID
     final override val displayName: String = "Debian Sid"
+    final override val supported: Boolean = true
     final override val defaultLabel: String = "Sid"
     final override val cacheKey: String = "$key-$linuxArch"
 

@@ -22,6 +22,8 @@ internal object ArchLinuxX86_64 : Distro {
     // disambiguate at a glance — ALARM uses the official "ARM" suffix,
     // and we mirror that with a "(x86)" suffix here.
     override val displayName: String = "Arch Linux (x86)"
+    // Emulator-only stand-in for the supported ALARM path.
+    override val supported: Boolean = true
     override val defaultLabel: String = "Arch"
     override val linuxArch: String = "x86_64"
     override val androidAbi: String = "x86_64"
