@@ -39,13 +39,24 @@ directory or its subdirs. Per-APEX configs come from
 
 ## Fix
 
-Copy rather than bind: at spawn, read Android's
-`/linkerconfig/ld.config.txt` (235 KB; reading the file is permitted)
-and write it into the rootfs at the same path, then drop
-`/linkerconfig` from `LIBHYBRIS_BIND_DIRS` in all three methods. The
-guest then sees a real app-owned file, `ls /` is clean, no SELinux
-involved, and hybris finds the config at the path it probes. Re-copy
-per spawn — Android regenerates `/linkerconfig` every boot.
+Agreed plan (detail in
+[plans/linkerconfig-copy-not-bind.md](../plans/linkerconfig-copy-not-bind.md)):
+copy rather than bind, and move the file under the hybris namespace.
+At spawn, read Android's `/linkerconfig/ld.config.txt` (235 KB;
+reading the file is permitted) and write it into the rootfs at
+`/usr/lib/hybris/ld.config.txt`, patch the fork's
+`kLdGeneratedConfigFilePath` (one constant, the fork's only
+`/linkerconfig` reference) to match, and drop `/linkerconfig` from
+`LIBHYBRIS_BIND_DIRS` in all three methods. `ls /` is clean, no
+SELinux involved, and `/linkerconfig` vanishes from the guest — the
+path was purely a hybris implementation detail, and the config now
+lives with the rest of the hybris runtime files.
+
+Copy staleness is a non-issue: linkerconfig regenerates only during
+boot and is static for the rest of uptime, a reboot kills the app and
+every guest, and the hybris linker reads the file once per process
+start — so a per-spawn copy is never staler than the bind for any
+process that reads it.
 
 One behaviour change: bound, the file was read-only (the libhybris
 binds are `ro = true`); copied, an in-rootfs root can rewrite it. Not a
@@ -59,7 +70,17 @@ back to `init_default_namespace_no_config` plus the configured
 the namespace links and permitted paths some vendor blobs dlopen
 across; binding just the file needs `tawcroot_path_add_bind` to stop
 opening bind sources `O_PATH|O_DIRECTORY` (tawcroot/src/path.c:368)
-plus empty-suffix routing, for no gain over copying.
+plus empty-suffix routing, for no gain over copying; copying to the
+original `/linkerconfig/ld.config.txt` path avoids the fork patch but
+keeps a mystery toplevel dir in the guest for no reason. The
+`LD_CONFIG_FILE` env var the linker honors is `#ifdef
+USE_LD_CONFIG_FILE` debug-only, and env is fragile through
+env-sanitizing paths — the compiled-in path is the better lever.
+Relocating the *other* hybris binds (`/apex /vendor /system
+/system_ext`) the same way is not possible: those paths are baked into
+`ld.config.txt` contents, vendor blobs' internal dlopens, and
+libhardware's compiled-in `/vendor/lib64/hw`; they also don't share
+the bug (world-readable labels).
 
 ## Where it bites
 
@@ -84,9 +105,17 @@ mounts on emulators (`isEmulator`, ChrootMounter.kt:26,72) but
 `TawcrootMethod` has no equivalent gate — `LIBHYBRIS_BIND_DIRS` is
 filtered by `File.exists()` alone, so tawcroot binds `/apex /vendor
 /system /system_ext /linkerconfig` on the emulator where none of them
-are used. Worth the same gate independent of this fix.
+are used. Decided (review, 2026-08-10): do NOT add the gate — the
+uniform bind list is why the emulator caught this phone-relevant bug
+at all, and gating would hide phone-present problems from emulator
+repro. `ChrootMounter`'s pre-existing gate stays as is (debug-only
+method).
 
 ## Status
+
+Fix plan agreed 2026-08-10:
+[plans/linkerconfig-copy-not-bind.md](../plans/linkerconfig-copy-not-bind.md)
+(includes the validation checklist; not yet executed).
 
 Reproduced on the x86_64 emulator (API 36) with the tawcroot method.
 **Not verified on the physical device** — the mechanism (generic AOSP
