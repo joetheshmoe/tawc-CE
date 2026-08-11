@@ -102,7 +102,10 @@ selected). Last shell exiting (or its tab closed) finishes the
 activity and drops the recents card; swiping the card kills all of the
 distro's shells. No foreground service: sessions die if Android kills
 the app process in the background; promote to a service only if that
-becomes a real complaint.
+becomes a real complaint. That complaint has arrived — a terminal-only
+session is backgrounded at oom_adj 700 and loses all network to the
+Doze firewall about a minute after screen-off; see
+[issues/rootfs-network-cut-when-app-backgrounded.md](../issues/rootfs-network-cut-when-app-backgrounded.md).
 
 Tab labels are the session's xterm window title (OSC 0/2, parsed by
 the vendored emulator, surfaced via `TerminalSession.getTitle()` /
