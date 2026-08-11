@@ -2,6 +2,7 @@ package me.phie.tawc.install.distro
 
 import me.phie.tawc.install.BootstrapFormat
 import me.phie.tawc.install.BootstrapVerification
+import me.phie.tawc.install.EnabledBootstrapFlavors
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
 import java.io.IOException
@@ -92,21 +93,36 @@ interface Distro {
     val bootstrap: TarballBootstrap
 
     /**
-     * Every bootstrap flavor this distro implements. Default: just the
-     * tarball path, wrapping [bootstrap] — distros with a single
-     * flavor change nothing. A distro adding a `packages` flavor
-     * overrides this with both entries; the map's [DistroBootstrap]
-     * values are static descriptors ([resolveBootstrap] may substitute
-     * live data at install time, e.g. a resolved tarball digest).
+     * Every bootstrap flavor this distro implements, whether or not
+     * this APK ships it. Default: just the tarball path, wrapping
+     * [bootstrap] — distros with a single flavor change nothing. A
+     * distro adding a `packages` flavor overrides this with both
+     * entries; the map's [DistroBootstrap] values are static
+     * descriptors ([resolveBootstrap] may substitute live data at
+     * install time, e.g. a resolved tarball digest).
+     *
+     * Callers outside the build gate and its tests want
+     * [bootstrapFlavors] instead.
      */
-    val bootstrapFlavors: Map<BootstrapFlavor, DistroBootstrap>
+    val declaredBootstrapFlavors: Map<BootstrapFlavor, DistroBootstrap>
         get() = mapOf(BootstrapFlavor.TARBALL to bootstrap)
 
     /**
-     * The one release-supported flavor. Anything else is a debug-only
-     * experiment: [me.phie.tawc.install.InstallationService] rejects
-     * non-supported flavors in release builds, mirroring the
-     * mirrorProxy gate.
+     * The flavors of [declaredBootstrapFlavors] this build actually
+     * ships ([me.phie.tawc.install.EnabledBootstrapFlavors]): the
+     * install form, the service gate, and [resolveBootstrap] all go
+     * through here, so a release APK sees tarball only. Not meant to
+     * be overridden — override [declaredBootstrapFlavors].
+     */
+    val bootstrapFlavors: Map<BootstrapFlavor, DistroBootstrap>
+        get() = declaredBootstrapFlavors.filterKeys { EnabledBootstrapFlavors.isEnabled(it) }
+
+    /**
+     * The one release-supported flavor, always shipped. Anything else
+     * is a debug-only experiment, excluded from release builds at
+     * build time by [me.phie.tawc.install.EnabledBootstrapFlavors] and
+     * rejected by [me.phie.tawc.install.InstallationService] if some
+     * caller names it anyway.
      */
     val supportedFlavor: BootstrapFlavor get() = BootstrapFlavor.TARBALL
 

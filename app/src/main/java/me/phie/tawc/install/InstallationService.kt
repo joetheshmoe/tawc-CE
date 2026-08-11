@@ -334,28 +334,29 @@ class InstallationService : Service() {
             return
         }
         // Bootstrap flavor. Null falls back to the distro's supported
-        // flavor; an explicit value must name an implemented flavor of
-        // this distro, and anything other than the supported flavor is
-        // debug-only — same gate shape as mirrorProxy below.
+        // flavor (tarball — the default for every install); an
+        // explicit value must name a flavor this distro implements
+        // *and* this build ships. Release APKs ship tarball only, so
+        // the packages flavor is unreachable there.
         val bootstrapFlavor: BootstrapFlavor
         if (bootstrapFlavorId != null) {
             val parsed = BootstrapFlavor.fromId(bootstrapFlavorId)
-            if (parsed == null || parsed !in distro.bootstrapFlavors) {
+            if (parsed == null || parsed !in distro.declaredBootstrapFlavors) {
                 rejectInstall(
                     id,
                     getString(
                         R.string.install_reject_unknown_bootstrap,
                         bootstrapFlavorId,
                         distro.key,
-                        distro.bootstrapFlavors.keys.joinToString { it.id },
+                        distro.declaredBootstrapFlavors.keys.joinToString { it.id },
                     ),
                 )
                 return
             }
-            if (parsed != distro.supportedFlavor && !me.phie.tawc.BuildConfig.DEBUG) {
+            if (parsed !in distro.bootstrapFlavors) {
                 rejectInstall(
                     id,
-                    getString(R.string.install_reject_bootstrap_release, parsed.id, distro.key),
+                    getString(R.string.install_reject_bootstrap_disabled, parsed.id, distro.key),
                 )
                 return
             }

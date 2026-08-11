@@ -58,9 +58,9 @@ class InstallActivity : AppCompatActivity() {
     /**
      * Bootstrap-flavor pick, as a [me.phie.tawc.install.distro.BootstrapFlavor.id]
      * string. Null means "the distro's supported flavor" (the only
-     * possibility in release builds — the row is debug-only and only
-     * rendered when the selected distro implements >1 flavor). Reset
-     * to null when the distro selection changes.
+     * possibility in release builds — the row only renders when the
+     * build ships >1 flavor for the selected distro). Reset to null
+     * when the distro selection changes.
      */
     private var selectedBootstrap: String? = null
     private var bootstrapRow: LinearLayout? = null
@@ -191,10 +191,10 @@ class InstallActivity : AppCompatActivity() {
 
         // Dev-only bootstrap-flavor radio row, between the distro
         // picker and the label field. Rendered only when the selected
-        // distro implements >1 flavor — which in release builds is
-        // effectively never surfaced, since non-supported flavors are
-        // rejected by the service gate anyway.
-        if (me.phie.tawc.BuildConfig.DEBUG) {
+        // distro has >1 flavor *in this build* — release APKs ship
+        // tarball only (EnabledBootstrapFlavors), so the row never
+        // appears there.
+        run {
             val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             bootstrapRow = row
             updateBootstrapRow()
@@ -385,9 +385,9 @@ class InstallActivity : AppCompatActivity() {
 
     /**
      * (Re)populate the dev-only bootstrap-flavor radio row for the
-     * currently selected distro. Hidden entirely when the distro has a
-     * single flavor. See `plans`-era rationale in
-     * notes/installation.md "Bootstrap flavors".
+     * currently selected distro. Hidden entirely when this build ships
+     * a single flavor for it — which is every distro in a release
+     * APK. See notes/installation.md "Bootstrap flavors".
      */
     private fun updateBootstrapRow() {
         val row = bootstrapRow ?: return

@@ -127,8 +127,10 @@ Part 1 infrastructure is done — no service/UI/metadata changes beyond:
    `PacmanPackageBootstrap(mirrorRoot, repos, arch, keyResource)`;
    the fail-closed tests will force the `keyResource` declaration
    (`archlinuxarm_signing_key` — already shipped and registered).
-2. `ArchLinuxArm.bootstrapFlavors` gains the PACKAGES entry;
-   `supportedFlavor` stays TARBALL (debug-only until earned).
+2. `ArchLinuxArm.declaredBootstrapFlavors` gains the PACKAGES entry;
+   `supportedFlavor` stays TARBALL. Nothing to do for the release
+   gate: `EnabledBootstrapFlavors` already keeps PACKAGES out of
+   release builds for every distro (debug-only until earned).
 3. A pacman-family installer beside `PackageBootstrapInstaller`
    (dispatch on the sealed type in `Installer.install`). Reuse
    `Clearsign`-adjacent machinery where it fits: detached-sig

@@ -193,7 +193,7 @@
     <string name="install_reject_method_unavailable">method \'%1$s\' is not available on this device</string>
     <string name="install_reject_mirror_proxy_release">mirrorProxy is debug-build-only (got \'%1$s\')</string>
     <string name="install_reject_unknown_bootstrap">unknown bootstrap flavor \'%1$s\' for %2$s (implemented: %3$s)</string>
-    <string name="install_reject_bootstrap_release">bootstrap flavor \'%1$s\' is not the supported flavor for %2$s; debug builds only</string>
+    <string name="install_reject_bootstrap_disabled">bootstrap flavor \'%1$s\' for %2$s is not shipped by this build (debug builds only)</string>
     <string name="install_reject_bootstrap_method">bootstrap flavor \'%1$s\' requires the tawcroot method (got \'%2$s\')</string>
     <string name="install_reject_bad_external_binds">invalid externalBinds: %1$s</string>
     <string name="install_reject_external_binds_method">external binds require the tawcroot method (got \'%1$s\')</string>

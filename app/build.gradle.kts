@@ -48,14 +48,29 @@ val libhybrisZinkEnabled: Boolean = "libhybris-zink" in enabledGraphics
 val gfxstreamEnabled: Boolean = "gfxstream" in enabledGraphics
 val mesaBuildNeeded: Boolean = gfxstreamEnabled || libhybrisZinkEnabled
 
-fun booleanProjectProperty(name: String, default: Boolean): Boolean {
-    val raw = project.findProperty(name) as String? ?: return default
+fun booleanProjectPropertyOrNull(name: String): Boolean? {
+    val raw = project.findProperty(name) as String? ?: return null
     return when (raw.trim().lowercase()) {
         "1", "true", "yes", "on" -> true
         "0", "false", "no", "off" -> false
         else -> error("Invalid $name=$raw (expected true or false)")
     }
 }
+
+fun booleanProjectProperty(name: String, default: Boolean): Boolean =
+    booleanProjectPropertyOrNull(name) ?: default
+
+// Per-build enabled bootstrap flavors (notes/installation.md
+// "Bootstrap flavors"). `tarball` is always shipped and is the default
+// for every distro; the on-device `packages` flavor (Debian sid
+// debootstrap) is a dev-only experiment — debug ships it, release does
+// not, so a production APK has no flavor option at all. Override both
+// sides with `-PtawcBootstrapPackages=true|false`. Same shape as the
+// tawcMethods gate above; see `me.phie.tawc.install.EnabledBootstrapFlavors`.
+val explicitPackagesBootstrap: Boolean? = booleanProjectPropertyOrNull("tawcBootstrapPackages")
+val debugPackagesBootstrap: Boolean = explicitPackagesBootstrap ?: true
+val releasePackagesBootstrap: Boolean = explicitPackagesBootstrap ?: false
+val anyVariantPacksDebootstrap: Boolean = debugPackagesBootstrap || releasePackagesBootstrap
 
 // Build and package the bionic Xwayland server for every enabled app
 // ABI, overrideable for lean builds with `-PtawcXwayland=false`.
@@ -109,6 +124,7 @@ android {
             buildConfigField("boolean", "METHOD_TAWCROOT_ENABLED", "${"tawcroot" in debugMethods}")
             buildConfigField("boolean", "METHOD_PROOT_ENABLED",    "${"proot" in debugMethods}")
             buildConfigField("boolean", "METHOD_CHROOT_ENABLED",   "${"chroot" in debugMethods}")
+            buildConfigField("boolean", "BOOTSTRAP_PACKAGES_ENABLED", "$debugPackagesBootstrap")
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ENABLED",      "${"libhybris" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ZINK_ENABLED", "${"libhybris-zink" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
@@ -135,6 +151,7 @@ android {
             buildConfigField("boolean", "METHOD_TAWCROOT_ENABLED", "${"tawcroot" in releaseMethods}")
             buildConfigField("boolean", "METHOD_PROOT_ENABLED",    "${"proot" in releaseMethods}")
             buildConfigField("boolean", "METHOD_CHROOT_ENABLED",   "${"chroot" in releaseMethods}")
+            buildConfigField("boolean", "BOOTSTRAP_PACKAGES_ENABLED", "$releasePackagesBootstrap")
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ENABLED",      "${"libhybris" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ZINK_ENABLED", "${"libhybris-zink" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
@@ -624,10 +641,16 @@ tawcAbis.forEach { abi ->
 // extracts it with ProotArchiveExtractor, symlinks intact.
 // Arch-independent (shell scripts), so this lives outside the per-ABI
 // blocks.
-run {
+//
+// Built into a generated dir that is registered as an assets srcDir
+// only on the build types that ship the packages flavor (debug by
+// default), so a release APK carries no debootstrap at all — and the
+// whole build step is skipped when no variant wants it.
+if (anyVariantPacksDebootstrap) {
     val tawcRoot = rootProject.projectDir
     val debootstrapDir = "$tawcRoot/deps/debootstrap"
-    val debootstrapAssetFile = "src/main/assets/debootstrap/debootstrap.tar"
+    val debootstrapAssetRoot = layout.buildDirectory.dir("generated/tawc-assets/debootstrap").get().asFile
+    val debootstrapAssetFile = File(debootstrapAssetRoot, "debootstrap/debootstrap.tar")
 
     val ensureDebootstrapTask = tasks.register<Exec>("ensureDebootstrap") {
         workingDir = tawcRoot
@@ -640,21 +663,42 @@ run {
 
     val packDebootstrapTask = tasks.register<Exec>("packDebootstrap") {
         dependsOn(ensureDebootstrapTask)
-        doFirst { mkdir(file(debootstrapAssetFile).parentFile) }
+        doFirst { mkdir(debootstrapAssetFile.parentFile) }
         workingDir = file(debootstrapDir)
         // Only what the runtime invokes: the entry script, the shared
         // functions library, and the per-suite scripts dir.
         commandLine("tar", "--format=ustar",
-            "-cf", "${project.projectDir}/$debootstrapAssetFile",
+            "-cf", debootstrapAssetFile.absolutePath,
             "debootstrap", "functions", "scripts")
         inputs.file("$tawcRoot/deps/deps.list")
         inputs.property("depTreeState", depTreeState("debootstrap"))
         outputs.file(debootstrapAssetFile)
     }
 
-    tasks.named("preBuild") {
-        dependsOn(packDebootstrapTask)
+    val packagesBuildTypes = buildList {
+        if (debugPackagesBootstrap) add("debug" to "mergeDebugAssets")
+        if (releasePackagesBootstrap) add("release" to "mergeReleaseAssets")
     }
+    for ((buildType, mergeAssetsTask) in packagesBuildTypes) {
+        android.sourceSets.getByName(buildType).assets.srcDir(debootstrapAssetRoot)
+        // The srcDir lives under build/, so the merge task needs the
+        // producer as an explicit dependency (preBuild alone doesn't
+        // order it).
+        tasks.matching { it.name == mergeAssetsTask }.configureEach {
+            dependsOn(packDebootstrapTask)
+        }
+    }
+}
+
+// The debootstrap tar used to be generated straight into
+// src/main/assets, which shipped it in every APK including release.
+// Delete leftovers from such a tree so they don't ride along; same
+// trap as pruneStaleXwaylandAssets below.
+val pruneStaleDebootstrapAssets = tasks.register<Delete>("pruneStaleDebootstrapAssets") {
+    delete("src/main/assets/debootstrap")
+}
+tasks.named("preBuild") {
+    dependsOn(pruneStaleDebootstrapAssets)
 }
 
 // Cross-compile libhybris for aarch64 glibc on the host and pack it

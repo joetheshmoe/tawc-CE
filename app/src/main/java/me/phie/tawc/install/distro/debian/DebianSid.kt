@@ -33,21 +33,26 @@ internal sealed class DebianSid(
         verification = BootstrapVerification.ResolvedAtInstallTime,
     )
 
+    /** Real debootstrap on-device against the signed sid archive,
+     *  trust-rooted in the shipped
+     *  `res/raw/debian_archive_keyring.asc`. Debug builds only — see
+     *  [me.phie.tawc.install.EnabledBootstrapFlavors]. */
+    private val packageBootstrap = PackageBootstrap(
+        archiveRoot = REPO_URL,
+        suite = SUITE,
+        packagesArch = dpkgArch,
+        keyResource = "debian_archive_keyring",
+    )
+
     /**
-     * Two flavors: the debuerreotype tarball (supported, unchanged)
-     * and `packages` — real debootstrap on-device against the signed
-     * sid archive, trust-rooted in the shipped
-     * `res/raw/debian_archive_keyring.asc`. The packages flavor stays
-     * debug-only until it has earned supported status.
+     * Two flavors: the debuerreotype tarball (supported, unchanged,
+     * the default everywhere) and `packages`, which stays debug-only
+     * until it has earned supported status — release builds filter it
+     * out of `bootstrapFlavors` entirely.
      */
-    final override val bootstrapFlavors: Map<BootstrapFlavor, DistroBootstrap> = mapOf(
+    final override val declaredBootstrapFlavors: Map<BootstrapFlavor, DistroBootstrap> = mapOf(
         BootstrapFlavor.TARBALL to bootstrap,
-        BootstrapFlavor.PACKAGES to PackageBootstrap(
-            archiveRoot = REPO_URL,
-            suite = SUITE,
-            packagesArch = dpkgArch,
-            keyResource = "debian_archive_keyring",
-        ),
+        BootstrapFlavor.PACKAGES to packageBootstrap,
     )
 
     final override fun resolveBootstrap(
@@ -65,7 +70,7 @@ internal sealed class DebianSid(
         // Static descriptor is complete: all live data (InRelease,
         // index) is fetched and verified inside the packages installer
         // itself, behind the shipped-keyring trust boundary.
-        BootstrapFlavor.PACKAGES -> bootstrapFlavors.getValue(BootstrapFlavor.PACKAGES)
+        BootstrapFlavor.PACKAGES -> packageBootstrap
     }
 
     final override val basePackages: List<String> = AptCommon.DEFAULT_BASE_PACKAGES

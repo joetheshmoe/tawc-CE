@@ -91,7 +91,7 @@ class ShippedPgpKeysTest {
                 .filterIsInstance<BootstrapVerification.Pgp>()
                 .map { it.keyResource } +
             DistroRegistry.all
-                .flatMap { it.bootstrapFlavors.values }
+                .flatMap { it.declaredBootstrapFlavors.values }
                 .filterIsInstance<me.phie.tawc.install.distro.PackageBootstrap>()
                 .map { it.keyResource }
         ).toSet()

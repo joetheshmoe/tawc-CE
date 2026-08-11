@@ -235,11 +235,19 @@ Run the standalone scripts only when iterating on the component itself
 `deps/debootstrap` (upstream salsa.debian.org, pinned in
 `deps/deps.list`) is packed verbatim — entry script, `functions`,
 `scripts/` with symlinks preserved — into
-`app/src/main/assets/debootstrap/debootstrap.tar` by the
-`packDebootstrapTask` Gradle task on `preBuild`. No host deps beyond
-`tar`. Consumed at runtime by the Debian *packages* bootstrap flavor
+`app/build/generated/tawc-assets/debootstrap/debootstrap/debootstrap.tar`
+by the `packDebootstrap` Gradle task. No host deps beyond `tar`.
+Consumed at runtime by the Debian *packages* bootstrap flavor
 (notes/installation.md "Bootstrap flavors"), which extracts it into the
-per-install bootstrap workspace. Bump the pin deliberately via
+per-install bootstrap workspace.
+
+The generated dir is registered as an assets srcDir only on the build
+types that ship the packages flavor — debug by default, never release
+— so a production APK carries no debootstrap, and the pack task (plus
+the `deps/debootstrap` checkout it needs) is skipped entirely when no
+variant wants it. `-PtawcBootstrapPackages=true|false` overrides both
+build types; see [installation.md](installation.md) "Bootstrap
+flavors". Bump the pin deliberately via
 `scripts/update-deps.sh debootstrap` and re-run the on-device packages
 install afterwards — debootstrap is unpatched by design; if a local
 patch ever becomes necessary, fork like libhybris rather than sedding

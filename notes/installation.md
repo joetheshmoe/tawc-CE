@@ -832,13 +832,25 @@ A distro can implement more than one way to assemble its rootfs — a
   chain roots in an APK-shipped keyring and `Valid-Until` gives replay
   protection no tarball has); it is *slower* than the tarball.
 
-`Distro.bootstrapFlavors` maps `BootstrapFlavor` (`TARBALL`,
-`PACKAGES`) to descriptors; `Distro.supportedFlavor` names the one
-release-supported flavor (tarball everywhere — the packages flavor is
-debug-only until it earns promotion). Selection: broker
-`--arg bootstrap=packages`, or the dev-only radio row on the install
-form. `InstallationService` rejects non-supported flavors in release
-builds (the mirrorProxy gate pattern) and rejects
+`Distro.declaredBootstrapFlavors` maps `BootstrapFlavor` (`TARBALL`,
+`PACKAGES`) to descriptors — everything a distro implements.
+`Distro.bootstrapFlavors` is that filtered through
+`EnabledBootstrapFlavors`, the **build-time gate** (BuildConfig
+`BOOTSTRAP_PACKAGES_ENABLED`, `-PtawcBootstrapPackages=true|false`,
+same shape as the `tawcMethods` gate): debug ships tarball+packages,
+release ships tarball only and doesn't even pack the debootstrap
+asset. Everything user-facing goes through the filtered map, so a
+production APK has no flavor option at all — no radio row, no
+selectable alternative.
+
+`Distro.supportedFlavor` names the release-supported flavor (tarball
+everywhere — the packages flavor is debug-only until it earns
+promotion) and is also the default when no flavor is named, so every
+install is a tarball install unless a dev picks otherwise. Selection:
+broker `--arg bootstrap=packages`, or the dev-only radio row on the
+install form (rendered only when the build ships >1 flavor for the
+selected distro). `InstallationService` rejects flavors the distro
+doesn't implement, flavors this build doesn't ship, and
 `packages`×non-tawcroot method combinations (the flavor runs its
 resolve/extract stages as a guest of the tawcroot method machinery).
 The installed flavor is persisted as `Installation.bootstrapFlavor`

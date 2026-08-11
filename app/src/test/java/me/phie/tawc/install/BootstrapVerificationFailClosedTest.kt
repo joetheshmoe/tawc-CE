@@ -76,11 +76,19 @@ class BootstrapVerificationFailClosedTest {
         ).map(::File).firstOrNull { it.isDirectory }
             ?: error("cannot locate res/raw")
         for (distro in DistroRegistry.all) {
-            val flavors = distro.bootstrapFlavors
+            // Declared, not shipped: the trust story must hold for
+            // every flavor a distro implements, independent of which
+            // ones this build ships (EnabledBootstrapFlavors).
+            val flavors = distro.declaredBootstrapFlavors
             assertTrue(
                 "${distro.displayName}: supported flavor ${distro.supportedFlavor} " +
                     "is not in bootstrapFlavors",
                 distro.supportedFlavor in flavors,
+            )
+            assertTrue(
+                "${distro.displayName}: supported flavor ${distro.supportedFlavor} " +
+                    "must be shipped by every build",
+                distro.supportedFlavor in distro.bootstrapFlavors,
             )
             assertEquals(
                 "${distro.displayName}: the TARBALL flavor entry must be the " +
@@ -126,11 +134,11 @@ class BootstrapVerificationFailClosedTest {
         }
     }
 
-    /** Debian ships the packages flavor; nothing else does (yet). */
+    /** Debian implements the packages flavor; nothing else does (yet). */
     @Test
     fun packagesFlavorShipsWhereExpected() {
         for (distro in DistroRegistry.all) {
-            val hasPackages = BootstrapFlavor.PACKAGES in distro.bootstrapFlavors
+            val hasPackages = BootstrapFlavor.PACKAGES in distro.declaredBootstrapFlavors
             assertEquals(
                 "${distro.displayName} (${distro.linuxArch})",
                 distro.key == Installation.DISTRO_DEBIAN_SID, hasPackages,
