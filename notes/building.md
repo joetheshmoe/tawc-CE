@@ -524,6 +524,47 @@ for distribution channels that can't carry it; the app hides the
 external-binds UI when the permission is absent. See
 [external-binds.md](external-binds.md).
 
+### Third-party license text (checked-in asset)
+
+```bash
+scripts/gen-third-party-licenses.sh
+```
+
+Regenerates `app/src/main/assets/licenses.json`, the data behind
+Settings > About > "Licenses" (`LicensesActivity` and
+`LicenseSectionActivity`). The distributed APK is GPLv3 (termux-shared's
+extra-keys widget), and the permissive licenses on everything else
+require their notices to ship with the binary — this asset is how both
+obligations are met. See [licensing.md](licensing.md).
+
+Regular builds never run it: the output is checked in. Re-run it after
+changing a Gradle dependency, a `deps/` pin, or a compositor crate, and
+commit the result. Inputs, all read from the working tree:
+
+- `LICENSE` / `LICENSE.MIT` — the GPLv3 text and tawc's own terms
+- `deps/**/{LICENSE,COPYING}*` — vendored native and Java sources
+- `cargo metadata` for `compositor/`, with per-crate texts read out of
+  the local `~/.cargo` registry checkout
+- `./gradlew :app:dependencies --configuration releaseRuntimeClasspath`
+  for Maven artifacts, mapped to licenses by the `GRADLE_LICENSES`
+  table in the script
+- `licenses/` — checked-in texts for the few artifacts whose license
+  lives only in a POM or on a project website
+
+So it needs populated dep checkouts and a warm cargo registry. It fails
+loudly rather than silently omitting a component: an unmapped Maven
+coordinate or a vendored checkout with no license file is an error, so
+new dependencies have to be classified before the file regenerates.
+
+Output shape matters for the UI. Components are grouped by license
+*family* so the index screen is ~14 rows rather than one endless page,
+and identical texts are shared (deduplicated on a whitespace-normalized
+key, so indentation differences don't scatter one Apache-2.0 into a
+dozen entries). Texts are never rewritten for grouping — only the key is
+normalized. Hard-wrapped prose is reflowed into single paragraphs so
+Android can rewrap it to the screen; blocks that don't look like prose
+stay verbatim and render monospace.
+
 ## Install and launch
 
 ```bash

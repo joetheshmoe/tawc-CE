@@ -20,9 +20,14 @@ When asked to prep a release:
    from two independent origins and diff, per notes/installation.md
    "Bootstrap integrity". `ShippedPgpKeysTest` pins the expected
    fingerprints.
-2. Draft release notes from `git log <last-tag>..` (first release: summarize the feature set instead). Keep them user-facing: features, fixes, known limitations.
-3. Commit as `release: vN`, then tag `vN` (the prep request counts as the explicit ask to commit/tag; do not push).
-4. Hand off: print the human steps below with the concrete version filled in, plus the drafted notes (e.g. as a `--notes-file` in scratch or inline for copy/paste).
+2. Re-run `scripts/gen-third-party-licenses.sh` and commit any change to
+   `app/src/main/assets/licenses.json`. The APK is GPLv3 and
+   carries permissive third-party notices, so the in-app attribution
+   text must match what the release actually ships — see
+   [licensing.md](licensing.md).
+3. Draft release notes from `git log <last-tag>..` (first release: summarize the feature set instead). Keep them user-facing: features, fixes, known limitations.
+4. Commit as `release: vN`, then tag `vN` (the prep request counts as the explicit ask to commit/tag; do not push).
+5. Hand off: print the human steps below with the concrete version filled in, plus the drafted notes (e.g. as a `--notes-file` in scratch or inline for copy/paste).
 
 The release build cannot be run by the agent: the signing keystore lives in a different user account where Claude does not run.
 
