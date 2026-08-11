@@ -54,6 +54,46 @@ eagerly:
   unchanged clip don't re-read — kills repeat toasts on per-read-toast
   OEMs. Disabled when the timestamp is 0.
 
+## A backgrounded app must not be able to paste
+
+Android's own foreground rule bounds clipboard reads to "while some tawc
+window is focused". Two compositor-side gates narrow that to the app the
+user is actually looking at. Both refuse by closing the client's pipe /
+answering with no property, which reads as an empty paste.
+
+**Wayland — offer serials.** Smithay hands `wl_data_device.selection`
+only to the keyboard focus, but it never takes an offer back: a client
+that loses focus isn't sent a null selection, its `wl_data_offer` object
+stays alive, and `wl_data_offer.receive` checks neither focus nor
+staleness (`selection/offer.rs`) before calling
+`SelectionHandler::send_selection` with the offer's *cloned* user data.
+So a backgrounded client could keep pasting through an offer it held on
+to — verified, it pasted indefinitely. `SelectionUserData::Android`
+therefore carries a serial: `refresh_android_selection` re-announces the
+selection under a fresh one at the end of every `set_input_focus`, and
+`send_selection` serves only offers whose serial is current. Only the
+focused client is ever handed an offer, so "current serial" means "the
+client focus went to"; focus leaving for another app — or for nothing,
+when tawc is backgrounded — invalidates the lot. Refocusing hands out a
+current offer again, so nothing is permanently poisoned. Cooperative
+toolkits drop stale offers by themselves and never notice.
+
+**X11 — `allow_selection_access`.** X11 has no offer objects to age out;
+clients convert the selection live, so xwayland.rs just refuses unless an
+X11 window holds focus. That covers the case that matters — a guest can't
+read behind a Wayland window or behind no tawc window at all — but it is
+deliberately coarse: smithay reports *that* a selection was requested,
+not by which X client, so any X11 client can read while any X11 window is
+focused. One Xwayland serves every distro, so that includes across
+installs. Closing it needs a smithay patch forwarding the requesting
+window; judged not worth it. Xdnd is unaffected (its selection has no
+`SelectionTarget`, so smithay skips the callback), and an X11 client that
+owns the selection itself is never routed through the WM.
+
+Per-distro isolation is a separate, unaddressed boundary: the clipboard,
+the Wayland socket, and the X display are all shared across installs by
+design.
+
 Smithay has no "does any selection exist" query and silently clears a
 dead client source's selection without calling the handler, so
 `clipboard::selection_exists` probes with
@@ -86,7 +126,15 @@ bursts. See the module doc in clipboard.rs.
   write deadline); accessors in `tests/integration/src/adb.rs`.
 - Coverage: clipboard cases in `tests/integration/tests/text_input.rs`
   and `xwayland.rs` (filter `clipboard`), plus
-  `apps.rs::test_gtk4_widget_factory_copy_paste_and_text_input`.
+  `apps.rs::test_gtk4_widget_factory_copy_paste_and_text_input`. The
+  background gates are
+  `text_input::test_retained_clipboard_offer_denied_when_backgrounded`
+  (wayland-debug-app `clipboard-paste-retained` keeps pasting through an
+  offer it never drops, while another app takes focus and gives it back)
+  and `xwayland::test_x11_clipboard_denied_behind_wayland_window`
+  (x11-debug-app `paste-loop` behind a Wayland window). Both clients
+  report every attempt as `CLIPBOARD_TRY:ok=<text>` vs
+  `CLIPBOARD_TRY:empty` / `:denied`.
 - Toast behavior (none on screen open, one per paste) can only be
   judged manually on a per-read-toast OEM device; AOSP/emulator dedupes
   per app+clip.

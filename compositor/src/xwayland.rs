@@ -358,7 +358,7 @@ fn start_xwayland(
                     let android_clipboard_active = current_data_device_selection_userdata(&data.seat)
                         .as_deref()
                         .is_some_and(|user_data| {
-                            matches!(user_data, crate::clipboard::SelectionUserData::Android)
+                            matches!(user_data, crate::clipboard::SelectionUserData::Android(_))
                         });
                     if android_clipboard_active {
                         if let Err(e) = wm.new_selection(
@@ -696,6 +696,19 @@ impl XwmHandler for TawcState {
     }
     fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
 
+    /// Gate X11 reads of a selection we own (an Android clip, or a Wayland
+    /// client's) on an X11 window holding focus. Denial makes smithay
+    /// answer with `SelectionNotify` carrying no property, which clients
+    /// report as an empty paste.
+    ///
+    /// Deliberately coarse: smithay tells us a selection was requested but
+    /// not *which* X client asked, and X11 puts no focus requirement on
+    /// `ConvertSelection`, so any X11 client can read while any X11 window
+    /// is focused — including across distros, since one Xwayland serves
+    /// all of them. Distinguishing them needs a smithay patch to forward
+    /// the requesting window, judged not worth it: what matters is that a
+    /// backgrounded app can't read behind a *Wayland* app or behind no
+    /// tawc window at all, and that this gate does give us.
     fn allow_selection_access(&mut self, xwm: XwmId, _selection: SelectionTarget) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
@@ -723,7 +736,7 @@ impl XwmHandler for TawcState {
                 let android_owned = current_data_device_selection_userdata(&self.seat)
                     .as_deref()
                     .is_some_and(|user_data| {
-                        matches!(user_data, crate::clipboard::SelectionUserData::Android)
+                        matches!(user_data, crate::clipboard::SelectionUserData::Android(_))
                     });
                 if android_owned {
                     if crate::clipboard::is_supported_text_mime(&mime_type) {

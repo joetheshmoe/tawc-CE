@@ -25,6 +25,8 @@
  *   clipboard-copy-overcap      Set a clipboard source larger than 1 MiB
  *   clipboard-copy-timeout      Set a clipboard source that never closes
  *   clipboard-paste             Read focused wl_data_device clipboard text
+ *   clipboard-paste-retained    Keep pasting through a retained offer,
+ *                               focused or not
  *   touch                       Fullscreen touch visualizer
  *   subsurface                  Fullscreen toplevel with a touchable subsurface
  *   popup                       Fullscreen toplevel with a touchable xdg_popup
@@ -617,14 +619,14 @@ static const struct wl_data_offer_listener data_offer_listener = {
     .offer = data_offer_offer,
 };
 
-static void read_clipboard_offer(struct app *app)
+/* Receive the current offer into `buf`, returning the byte count. Zero
+ * means the compositor closed the pipe without writing — its refusal
+ * path — which a client can't tell from an empty clipboard. */
+static size_t receive_clipboard_offer(struct app *app, char *buf, size_t cap)
 {
     int fds[2];
-    char buf[MAX_TEXT];
     size_t off = 0;
 
-    if (!app->clipboard_offer || !app->clipboard_offer_mime[0])
-        return;
     if (pipe(fds) < 0)
         fatal("clipboard pipe failed: %s", strerror(errno));
 
@@ -647,7 +649,7 @@ static void read_clipboard_offer(struct app *app)
         if (pr == 0)
             fatal("clipboard receive timed out");
         if (pfd.revents & (POLLIN | POLLHUP)) {
-            ssize_t n = read(fds[0], buf + off, sizeof(buf) - off - 1);
+            ssize_t n = read(fds[0], buf + off, cap - off - 1);
             if (n < 0) {
                 if (errno == EINTR)
                     continue;
@@ -656,13 +658,41 @@ static void read_clipboard_offer(struct app *app)
             if (n == 0)
                 break;
             off += (size_t)n;
-            if (off >= sizeof(buf) - 1)
+            if (off >= cap - 1)
                 fatal("clipboard text too large for debug app");
         }
     }
     close(fds[0]);
     buf[off] = '\0';
+    return off;
+}
+
+static void read_clipboard_offer(struct app *app)
+{
+    char buf[MAX_TEXT];
+
+    if (!app->clipboard_offer || !app->clipboard_offer_mime[0])
+        return;
+    receive_clipboard_offer(app, buf, sizeof(buf));
     debug_emit("CLIPBOARD_PASTE", buf);
+}
+
+/* One paste attempt through whatever offer we are still holding,
+ * reported as `CLIPBOARD_TRY:ok=<text>` or `CLIPBOARD_TRY:empty`. Used
+ * to check that an offer kept past a focus change stops working. */
+static void try_retained_clipboard_offer(struct app *app)
+{
+    char buf[MAX_TEXT];
+    char line[MAX_TEXT + 8];
+
+    if (!app->clipboard_offer || !app->clipboard_offer_mime[0])
+        return;
+    if (receive_clipboard_offer(app, buf, sizeof(buf)) == 0) {
+        debug_emit("CLIPBOARD_TRY", "empty");
+        return;
+    }
+    checked_snprintf(line, sizeof(line), "ok=%s", buf);
+    debug_emit("CLIPBOARD_TRY", line);
 }
 
 static void data_device_data_offer(void *data, struct wl_data_device *device,
@@ -2978,6 +3008,58 @@ static int run_scene_command(const struct wayland_mode *mode)
     return 0;
 }
 
+/* Holds on to the last wl_data_offer it was handed and keeps pasting
+ * through it, including after focus moves to another app — a cooperative
+ * toolkit would drop the offer when the next selection event arrives.
+ * The compositor must stop serving it once it isn't the focused client.
+ */
+static int cmd_clipboard_paste_retained(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "tawc wayland clipboard retained-offer debug",
+        .app_id = "wayland-debug-app-clipboard-paste-retained",
+        .use_data_device = 1,
+        .editable = 0,
+        .provide_surrounding = 0,
+    };
+    struct app app;
+
+    (void)argc;
+    (void)argv;
+    memset(&app, 0, sizeof(app));
+    signal_app = &app;
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+    signal(SIGPIPE, SIG_IGN);
+
+    setup_wayland(&app, &mode);
+
+    while (app.running) {
+        struct pollfd pfd = {
+            .events = POLLIN,
+        };
+        int pr;
+
+        while (wl_display_prepare_read(app.display) != 0)
+            wl_display_dispatch_pending(app.display);
+        wl_display_flush(app.display);
+        pfd.fd = wl_display_get_fd(app.display);
+        pr = poll(&pfd, 1, 250);
+        if (pr > 0)
+            wl_display_read_events(app.display);
+        else
+            wl_display_cancel_read(app.display);
+        if (pr < 0 && errno != EINTR)
+            fatal("poll wayland display failed: %s", strerror(errno));
+        if (wl_display_dispatch_pending(app.display) < 0)
+            fatal("wl_display_dispatch_pending failed: %s", strerror(errno));
+        try_retained_clipboard_offer(&app);
+    }
+
+    teardown_wayland(&app);
+    return 0;
+}
+
 static int cmd_subsurface(int argc, char **argv)
 {
     static const struct wayland_mode mode = {
@@ -3077,6 +3159,9 @@ static const struct command commands[] = {
       cmd_clipboard_copy_timeout },
     { "clipboard-paste", "Read focused wl_data_device clipboard text",
       cmd_clipboard_paste },
+    { "clipboard-paste-retained",
+      "Keep pasting through a retained wl_data_offer, focused or not",
+      cmd_clipboard_paste_retained },
     { "touch", "Fullscreen touch visualizer", cmd_touch },
     { "render-pattern", "Fullscreen deterministic SHM color pattern",
       cmd_render_pattern },

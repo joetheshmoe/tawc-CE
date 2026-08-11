@@ -3,6 +3,7 @@
  *
  * Commands:
  *   paste         Read CLIPBOARD as UTF8_STRING and print TAWC_DEBUG
+ *   paste-loop    Re-read CLIPBOARD every 250ms, reporting each attempt
  *   copy <text>   Own CLIPBOARD and serve text until killed
  */
 
@@ -259,11 +260,11 @@ static int is_text_target(const struct atoms *atoms, Atom target)
            target == atoms->text_plain_utf8;
 }
 
-static int cmd_paste(struct x11_app *app, int argc, char **argv)
+/* One CLIPBOARD -> UTF8_STRING conversion. Returns the text (caller
+ * frees) or NULL when the selection owner refused the request, which is
+ * how the compositor answers a client that doesn't hold focus. */
+static char *convert_clipboard(struct x11_app *app)
 {
-    (void)argv;
-    if (argc != 0)
-        fatal("paste takes no arguments");
     Display *dpy = app->dpy;
     Window win = app->win;
     const struct atoms *atoms = &app->atoms;
@@ -273,11 +274,6 @@ static int cmd_paste(struct x11_app *app, int argc, char **argv)
     unsigned long nitems = 0;
     unsigned long bytes_after = 0;
     unsigned char *data = NULL;
-
-    /* Let the Rust test inject a tap after READY so XWayland grants
-     * selection access to this focused X11 client. Keep painting while
-     * the compositor resizes the X11 window to the host. */
-    pump_x_events(app, 2000);
 
     XConvertSelection(dpy, atoms->clipboard, atoms->utf8_string,
                       atoms->tawc_clipboard, win, CurrentTime);
@@ -293,7 +289,7 @@ static int cmd_paste(struct x11_app *app, int argc, char **argv)
     }
 
     if (ev.xselection.property == None)
-        fatal("selection owner refused UTF8_STRING");
+        return NULL;
 
     if (XGetWindowProperty(dpy, win, atoms->tawc_clipboard, 0, 1024 * 1024,
                            True, AnyPropertyType, &actual_type,
@@ -310,9 +306,54 @@ static int cmd_paste(struct x11_app *app, int argc, char **argv)
     if (!text)
         fatal("calloc failed");
     memcpy(text, data, nitems);
+    XFree(data);
+    return text;
+}
+
+static int cmd_paste(struct x11_app *app, int argc, char **argv)
+{
+    (void)argv;
+    if (argc != 0)
+        fatal("paste takes no arguments");
+
+    /* Let the Rust test inject a tap after READY so XWayland grants
+     * selection access to this focused X11 client. Keep painting while
+     * the compositor resizes the X11 window to the host. */
+    pump_x_events(app, 2000);
+
+    char *text = convert_clipboard(app);
+    if (!text)
+        fatal("selection owner refused UTF8_STRING");
     debug_emit("CLIPBOARD_PASTE", text);
     free(text);
-    XFree(data);
+    return 0;
+}
+
+/* Poll CLIPBOARD until killed, reporting every attempt as
+ * `CLIPBOARD_TRY:ok=<text>` or `CLIPBOARD_TRY:denied`. Lets a test watch
+ * one client's access change as focus moves to and from another. */
+static int cmd_paste_loop(struct x11_app *app, int argc, char **argv)
+{
+    (void)argv;
+    if (argc != 0)
+        fatal("paste-loop takes no arguments");
+
+    while (running) {
+        char *text = convert_clipboard(app);
+        if (text) {
+            char *line = calloc(strlen(text) + sizeof("ok="), 1);
+            if (!line)
+                fatal("calloc failed");
+            strcpy(line, "ok=");
+            strcat(line, text);
+            debug_emit("CLIPBOARD_TRY", line);
+            free(line);
+            free(text);
+        } else {
+            debug_emit("CLIPBOARD_TRY", "denied");
+        }
+        pump_x_events(app, 250);
+    }
     return 0;
 }
 
@@ -408,13 +449,14 @@ static char *join_args(int argc, char **argv)
 int main(int argc, char **argv)
 {
     if (argc < 2)
-        fatal("usage: %s paste|copy <text>", argv[0]);
+        fatal("usage: %s paste|paste-loop|copy <text>", argv[0]);
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
     const struct command commands[] = {
         { "paste", "paste", cmd_paste },
+        { "paste-loop", "paste-loop", cmd_paste_loop },
         { "copy", "copy <text>", cmd_copy },
     };
     const struct command *cmd = NULL;

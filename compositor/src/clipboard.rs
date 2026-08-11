@@ -57,8 +57,9 @@ pub enum SelectionUserData {
     /// Android's clipboard owns the selection. Payloadless: the content
     /// is fetched from Android at paste time (see
     /// [`write_android_clipboard_to_fd`]) so the OS paste toast fires
-    /// only when a client actually pastes.
-    Android,
+    /// only when a client actually pastes. Carries the serial of the
+    /// announce it came from — see [`refresh_android_selection`].
+    Android(u64),
     X11(SelectionTarget),
 }
 
@@ -145,6 +146,52 @@ pub fn selection_exists(state: &TawcState) -> bool {
         request_data_device_client_selection(&state.seat, PROBE_MIME.to_string(), devnull.into()),
         Err(SelectionRequestError::NoSelection)
     )
+}
+
+/// Install the Android selection under a fresh serial, which invalidates
+/// every `wl_data_offer` handed out before now.
+///
+/// A client keeps its `wl_data_offer` object until it destroys it, and
+/// smithay checks neither focus nor staleness on `wl_data_offer.receive`
+/// — it just hands us the offer's cloned user data. Losing focus doesn't
+/// take the offer away (the previously focused client isn't even sent a
+/// null selection), so without this an unfocused client could paste
+/// through an offer it held on to. Only the focused client is ever sent
+/// an offer, so "your offer carries the current serial" means "you are
+/// the client focus went to". Enforced in `SelectionHandler::send_selection`.
+///
+/// No-op unless Android currently owns the selection, and deliberately
+/// silent towards the xwm: X11 conversions are gated live by
+/// `allow_selection_access`, so re-announcing there would only churn
+/// CLIPBOARD ownership under X clients for nothing.
+pub fn refresh_android_selection(state: &TawcState) {
+    if current_android_selection_serial(state).is_none() {
+        return;
+    }
+    smithay::wayland::selection::data_device::set_data_device_selection(
+        &state.display_handle,
+        &state.seat,
+        text_mime_types(),
+        SelectionUserData::Android(next_android_selection_serial()),
+    );
+}
+
+/// Serial of the live Android selection, or `None` when Android doesn't
+/// own the selection.
+pub fn current_android_selection_serial(state: &TawcState) -> Option<u64> {
+    match smithay::wayland::selection::data_device::current_data_device_selection_userdata(
+        &state.seat,
+    )
+    .as_deref()
+    {
+        Some(SelectionUserData::Android(serial)) => Some(*serial),
+        _ => None,
+    }
+}
+
+pub fn next_android_selection_serial() -> u64 {
+    static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
+    NEXT_SERIAL.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Queue a pull of a freshly set client selection into Android. Deferred

@@ -191,6 +191,38 @@ pub fn start_wayland_debug_clipboard_paste(backend: GraphicsBackend, env: &str) 
     app
 }
 
+/// Start a client that hangs on to the `wl_data_offer` it is given and
+/// keeps pasting through it whether or not it still holds focus. Reports
+/// every attempt as `CLIPBOARD_TRY:ok=<text>` / `CLIPBOARD_TRY:empty`.
+pub fn start_wayland_debug_clipboard_paste_retained(
+    backend: GraphicsBackend,
+    env: &str,
+) -> DebugApp {
+    let binary = ensure_wayland_debug_app();
+    let app = DebugApp::start(backend, &binary, "clipboard-paste-retained", env)
+        .expect("Failed to start wayland clipboard-paste-retained debug app");
+    app.wait_ready()
+        .expect("Wayland clipboard-paste-retained debug app did not become ready");
+    app
+}
+
+/// An activity spawned for a fresh window takes a moment to gain Android
+/// window focus after the client maps, so poll rather than asking once.
+pub fn wait_for_focused_activity_id(timeout: Duration) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let last_error = match crate::adb::focused_activity_id() {
+            Ok(id) => return id,
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            Instant::now() < deadline,
+            "no compositor activity took focus; last error={last_error}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Start wayland-debug-app's fullscreen touch visualizer. It does not
 /// enable text-input; tests drive touch through the focused SurfaceView and
 /// assert on the client's wl_touch events.

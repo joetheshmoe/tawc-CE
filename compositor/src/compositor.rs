@@ -450,12 +450,22 @@ impl TawcState {
 
     pub fn set_input_focus(&mut self, target: Option<&WlSurface>) {
         let target_owned = target.cloned();
+        let mut focus_moved = false;
         if let Some(keyboard) = self.seat.get_keyboard() {
+            focus_moved = keyboard.current_focus().as_ref() != target;
             let serial = smithay::utils::SERIAL_COUNTER.next_serial();
             keyboard.set_focus(self, target_owned, serial);
         }
         let target_client = target.and_then(|surface| surface.client());
         set_data_device_focus(&self.display_handle, &self.seat, target_client);
+        // Age out clipboard offers, after the handover so the one smithay
+        // just gave the newly focused client is superseded too — it gets
+        // re-offered under the new serial, everyone else's goes stale.
+        // Only on a real move: a redundant call would otherwise be able
+        // to invalidate the focused client's offer mid-paste.
+        if focus_moved {
+            crate::clipboard::refresh_android_selection(self);
+        }
         let target_activity_id = target.and_then(|surface| self.desktop.host_for_surface(surface));
         self.text_input_state.update_focus(target, target_activity_id.as_ref());
     }
@@ -1208,8 +1218,15 @@ impl SelectionHandler for TawcState {
         user_data: &Self::SelectionUserData,
     ) {
         match user_data {
-            crate::clipboard::SelectionUserData::Android => {
+            crate::clipboard::SelectionUserData::Android(serial) => {
                 if ty != SelectionTarget::Clipboard {
+                    return;
+                }
+                // Reject an offer the client held past the focus change
+                // that superseded it (see `refresh_android_selection`).
+                // Dropping the fd is the existing refusal path: the
+                // client sees EOF, i.e. an empty paste.
+                if crate::clipboard::current_android_selection_serial(self) != Some(*serial) {
                     return;
                 }
                 crate::clipboard::write_android_clipboard_to_fd(fd);

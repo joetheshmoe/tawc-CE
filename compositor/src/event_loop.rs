@@ -504,7 +504,9 @@ pub fn run(
                     &data.display_handle,
                     &data.seat,
                     crate::clipboard::text_mime_types(),
-                    crate::clipboard::SelectionUserData::Android,
+                    crate::clipboard::SelectionUserData::Android(
+                        crate::clipboard::next_android_selection_serial(),
+                    ),
                 );
                 if let Some(xwm) = data.xwm.as_mut() {
                     if let Err(e) = xwm.new_selection(

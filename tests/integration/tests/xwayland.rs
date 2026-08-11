@@ -255,6 +255,72 @@ fn test_android_clipboard_text_to_x11() {
     assert_compositor_clean();
 }
 
+/// A backgrounded X11 client must not be able to pull the Android
+/// clipboard. `XwmHandler::allow_selection_access` refuses unless an X11
+/// window holds focus, so a Wayland app taking focus cuts X11 off;
+/// refusal is a `SelectionNotify` with no property, which the client
+/// reports as `denied`.
+///
+/// Deliberately not covered: one X11 client reading while *another* X11
+/// window is focused. Telling them apart needs a smithay change to
+/// forward the requesting window, and one Xwayland is shared by every
+/// distro — see the handler's comment.
+#[test]
+fn test_x11_clipboard_denied_behind_wayland_window() {
+    tawc_integration::helpers::test_init();
+    let android_text = "android clipboard behind wayland";
+    adb::clipboard_set_text(android_text).expect("set Android clipboard");
+    wait_for_android_clipboard(android_text, XWAYLAND_LAUNCH_TIMEOUT);
+
+    let bin = rootfs::ensure_x11_debug_app().expect("build x11-debug-app");
+    let mut x11 = DebugApp::start(SHM_BACKEND, &bin, "paste-loop", "DISPLAY=:0")
+        .expect("start x11-debug-app paste-loop");
+    x11.wait_ready()
+        .expect("x11-debug-app did not map its X11 window");
+    let expected = format!("ok={android_text}");
+    wait_for_x11_clipboard_try(&x11, &expected, "focused");
+
+    // A Wayland app takes focus; the X11 client is now in the background.
+    let mut wayland = tawc_integration::helpers::start_wayland_debug_touch(SHM_BACKEND, "");
+    wait_for_x11_clipboard_try(&x11, "denied", "backgrounded");
+    let cutoff = x11.count_with_tag("CLIPBOARD_TRY") + 1;
+    x11.wait_for_tag_count("CLIPBOARD_TRY", cutoff + 3, XWAYLAND_LAUNCH_TIMEOUT)
+        .expect("X11 client stopped attempting pastes");
+    let attempts = x11.payloads_with_tag("CLIPBOARD_TRY");
+    let new = &attempts[cutoff..];
+    assert!(
+        new.iter().all(|attempt| attempt == "denied"),
+        "backgrounded X11 client read the Android clipboard; attempts={new:?}"
+    );
+
+    wayland
+        .stop()
+        .expect("wayland touch app crashed or failed to stop cleanly");
+    x11.stop()
+        .expect("x11-debug-app crashed or failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+/// Wait for a `paste-loop` attempt made after this call — the app's whole
+/// history is retained, so waiting on the tag alone would match an
+/// attempt from an earlier focus state.
+fn wait_for_x11_clipboard_try(app: &DebugApp, expected: &str, label: &str) {
+    let already = app.count_with_tag("CLIPBOARD_TRY");
+    let deadline = Instant::now() + XWAYLAND_LAUNCH_TIMEOUT;
+    loop {
+        let attempts = app.payloads_with_tag("CLIPBOARD_TRY");
+        let new = &attempts[already.min(attempts.len())..];
+        if new.iter().any(|attempt| attempt == expected) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{label} X11 client never reported CLIPBOARD_TRY:{expected}; attempts={new:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn test_x11_clipboard_text_to_android() {
     tawc_integration::helpers::test_init();

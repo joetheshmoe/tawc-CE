@@ -49,10 +49,11 @@ use tawc_integration::debug_app::DebugApp;
 use tawc_integration::helpers::{
     assert_broker_ok, assert_compositor_clean, start_wayland_debug_clipboard_copy,
     start_wayland_debug_clipboard_copy_double, start_wayland_debug_clipboard_overcap,
-    start_wayland_debug_clipboard_paste,
+    start_wayland_debug_clipboard_paste, start_wayland_debug_clipboard_paste_retained,
     start_wayland_debug_clipboard_timeout, start_wayland_debug_text_input,
     start_wayland_debug_text_input_echo_preedit, start_wayland_debug_text_input_no_surrounding,
-    start_wayland_debug_text_input_stale_newline, start_wayland_debug_touch, TIMEOUT,
+    start_wayland_debug_text_input_stale_newline, start_wayland_debug_touch,
+    wait_for_focused_activity_id, TIMEOUT,
 };
 use tawc_integration::GraphicsBackend;
 
@@ -1224,6 +1225,81 @@ fn test_hardware_keyboard_dispatches_wl_keyboard() {
     app.stop()
         .expect("debug app crashed or failed to stop cleanly");
     assert_compositor_clean();
+}
+
+/// A client must not be able to paste the Android clipboard once it is
+/// in the background. Smithay hands offers only to the focused client
+/// but never withdraws them, so a client that keeps its `wl_data_offer`
+/// could otherwise keep reading; the compositor re-announces the Android
+/// selection under a fresh serial on every focus change and refuses
+/// offers carrying an older one (`refresh_android_selection`). Refusal
+/// closes the pipe, which the client sees as an empty paste.
+#[test]
+fn test_retained_clipboard_offer_denied_when_backgrounded() {
+    tawc_integration::helpers::test_init();
+    let android_text = "android clipboard retained offer";
+    adb::clipboard_set_text(android_text).expect("set Android clipboard");
+
+    let mut retained =
+        start_wayland_debug_clipboard_paste_retained(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+    let retained_activity = wait_for_focused_activity_id(TIMEOUT);
+    let expected = format!("ok={android_text}");
+    wait_for_clipboard_try(&retained, &expected, "focused");
+
+    // Another app takes focus. The retained offer must go dead.
+    let mut other = start_wayland_debug_touch(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+    wait_for_clipboard_try(&retained, "empty", "backgrounded");
+    assert_clipboard_try_all(&retained, "empty", "backgrounded");
+
+    // Refocusing hands it a current offer again, so this gates on focus
+    // rather than permanently poisoning the client.
+    assert_broker_ok(
+        adb::focus_activity(&retained_activity).expect("focus retained-offer activity"),
+        "focus-activity",
+    );
+    wait_for_clipboard_try(&retained, &expected, "refocused");
+
+    other
+        .stop()
+        .expect("touch debug app crashed or failed to stop cleanly");
+    retained
+        .stop()
+        .expect("retained-offer app crashed or failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+/// Wait for a `CLIPBOARD_TRY` attempt made *after* this call with the
+/// given payload. The app keeps its whole history, so waiting on the tag
+/// alone would match an attempt from an earlier focus state.
+fn wait_for_clipboard_try(app: &DebugApp, expected: &str, label: &str) {
+    let already = app.count_with_tag("CLIPBOARD_TRY");
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let attempts = app.payloads_with_tag("CLIPBOARD_TRY");
+        let new = &attempts[already.min(attempts.len())..];
+        if new.iter().any(|attempt| attempt == expected) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{label} client never reported CLIPBOARD_TRY:{expected}; attempts={new:?}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Assert the next few attempts all carry `expected`. The first one is
+/// skipped: it may have been in flight before the focus change.
+fn assert_clipboard_try_all(app: &DebugApp, expected: &str, label: &str) {
+    let cutoff = app.count_with_tag("CLIPBOARD_TRY") + 1;
+    app.wait_for_tag_count("CLIPBOARD_TRY", cutoff + 3, TIMEOUT)
+        .unwrap_or_else(|e| panic!("{label} client stopped attempting pastes: {e}"));
+    let attempts = app.payloads_with_tag("CLIPBOARD_TRY");
+    let new = &attempts[cutoff..];
+    assert!(
+        new.iter().all(|attempt| attempt == expected),
+        "{label} client attempts were not all {expected:?}; attempts={new:?}"
+    );
 }
 
 #[test]
