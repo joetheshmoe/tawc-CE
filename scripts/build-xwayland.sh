@@ -23,8 +23,9 @@
 #   scripts/build-xwayland.sh --only=<lib>   # build just one stage
 #
 # Build-time deps (host packages): meson, ninja, pkg-config, python3,
-# python3-libxml2, xsltproc, autoconf, automake, libtool, perl. The NDK
-# is located via $ANDROID_NDK_HOME (or under $ANDROID_HOME/ndk/<version>/).
+# python3-libxml2, xsltproc, autoconf, automake, libtool, perl, expat
+# (headers; for the native wayland-scanner). The NDK is located via
+# $ANDROID_NDK_HOME (or under $ANDROID_HOME/ndk/<version>/).
 
 set -euo pipefail
 
@@ -61,6 +62,10 @@ done
 OUT_DIR="$REPO_DIR/build/xwayland-$ABI"
 PREFIX="$OUT_DIR/install"
 PC_DIR="$PREFIX/lib/pkgconfig"
+# Build-machine tools we compile ourselves rather than take from the host
+# (currently just wayland-scanner — see stage_wayland_scanner).
+NATIVE_PREFIX="$OUT_DIR/native"
+NATIVE_PC_DIR="$NATIVE_PREFIX/lib/pkgconfig"
 
 # ── NDK toolchain ──
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
@@ -111,7 +116,7 @@ if [ "$CLEAN" = "1" ]; then
     echo "==> wiping $OUT_DIR"
     rm -rf "$OUT_DIR"
 fi
-mkdir -p "$SRC_ROOT" "$PREFIX/lib" "$PREFIX/include" "$PREFIX/share" "$PC_DIR"
+mkdir -p "$SRC_ROOT" "$PREFIX/lib" "$PREFIX/include" "$PREFIX/share" "$PC_DIR" "$NATIVE_PC_DIR"
 
 # For autotools builds: set host (cross) pkg-config search path
 # explicitly via env. For meson builds: don't set the env (it shadows
@@ -176,6 +181,22 @@ EOF
 }
 gen_meson_cross
 
+# Native (build-machine) file. Its only job is to put our own
+# $NATIVE_PREFIX ahead of the host's pkg-config path, so meson's
+# `native: true` dependency lookups find the wayland-scanner we build
+# from the pinned source instead of whatever the host distro ships.
+NATIVE_FILE="$OUT_DIR/native.ini"
+gen_meson_native() {
+    local host_pc_path
+    host_pc_path="$(pkg-config --variable pc_path pkg-config 2>/dev/null || true)"
+    [ -n "$host_pc_path" ] || host_pc_path="/usr/lib/pkgconfig:/usr/share/pkgconfig"
+    cat >"$NATIVE_FILE" <<EOF
+[properties]
+pkg_config_libdir = '$NATIVE_PC_DIR:$NATIVE_PREFIX/share/pkgconfig:$host_pc_path'
+EOF
+}
+gen_meson_native
+
 # Wrapper invoking autotools configure with NDK toolchain.
 configure_autotools() {
     local extra=("$@")
@@ -204,7 +225,7 @@ build_meson() {
         {
             printf 'src=%s\nprefix=%s\nlibdir=lib\nbuildtype=release\n' "$src" "$PREFIX"
             printf 'default_library=shared\n'
-            sha256sum "$CROSS_FILE"
+            sha256sum "$CROSS_FILE" "$NATIVE_FILE"
             printf 'arg=%s\n' "$@"
         } | sha256sum | awk '{print $1}'
     )
@@ -212,6 +233,7 @@ build_meson() {
         echo "==> meson setup $name"
         meson setup "$build" "$src" \
             --cross-file "$CROSS_FILE" \
+            --native-file "$NATIVE_FILE" \
             --prefix="$PREFIX" \
             --libdir=lib \
             --buildtype=release \
@@ -222,6 +244,7 @@ build_meson() {
         echo "==> meson reconfigure $name"
         meson setup --reconfigure "$build" "$src" \
             --cross-file "$CROSS_FILE" \
+            --native-file "$NATIVE_FILE" \
             --prefix="$PREFIX" \
             --libdir=lib \
             --buildtype=release \
@@ -285,6 +308,36 @@ stage_xtrans() {
     build_autotools xtrans --disable-docs
 }
 
+stage_wayland_scanner() {
+    stage_should_run wayland-scanner || return 0
+    # libwayland's cross build looks up a *native* wayland-scanner whose
+    # pkg-config version equals the pinned source version exactly (meson
+    # reads a bare `version:` as `==`), so a host wayland package even one
+    # release ahead of our pin fails the whole build. Build the scanner
+    # from our own pinned tree into $NATIVE_PREFIX and let the native
+    # machine file point pkg-config at it — the host's wayland-dev version
+    # then doesn't matter, and every generated protocol file matches the
+    # libwayland we ship.
+    clone_pinned wayland
+    local src="$SRC_ROOT/wayland"
+    local build="$OUT_DIR/build-wayland-scanner"
+    if [ ! -f "$build/build.ninja" ]; then
+        echo "==> meson setup wayland-scanner (native)"
+        meson setup "$build" "$src" \
+            --native-file "$NATIVE_FILE" \
+            --prefix="$NATIVE_PREFIX" \
+            --libdir=lib \
+            --buildtype=release \
+            -Dscanner=true \
+            -Dlibraries=false \
+            -Dtests=false \
+            -Ddocumentation=false \
+            -Ddtd_validation=false
+    fi
+    echo "==> ninja install wayland-scanner (native)"
+    ninja -C "$build" install
+}
+
 stage_wayland_protocols() {
     stage_should_run wayland-protocols || return 0
     clone_pinned wayland-protocols
@@ -317,7 +370,8 @@ stage_wayland() {
     # libwayland upstream builds wayland-scanner (host tool) AND
     # libwayland-{client,server,egl,cursor}. We only need the client lib
     # at runtime — Xwayland uses it to talk to the compositor. The
-    # scanner is only needed at build time and we use the host's already.
+    # scanner is only needed at build time and stage_wayland_scanner
+    # already built it natively from this same pinned tree.
     clone_pinned wayland
     build_meson wayland \
         -Dscanner=false \
@@ -545,6 +599,7 @@ echo
 stage_xorg_macros
 stage_xorgproto
 stage_xtrans
+stage_wayland_scanner
 stage_wayland_protocols
 stage_libxcvt
 stage_pixman

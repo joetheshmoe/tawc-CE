@@ -371,9 +371,23 @@ and lays down `<filesDir>/xwayland/bin/{Xwayland,xkbcomp}` symlinks
 into `nativeLibraryDir`.
 
 Host packages (in addition to the always-required set above): `perl`
-(needed by xorgproto/libxcb/font-util autotools macros). Everything
-else (meson, ninja, autoconf, automake, libtool, pkg-config, python3)
-is already required for libhybris.
+(needed by xorgproto/libxcb/font-util autotools macros) and expat
+headers (`expat` / `libexpat1-dev`, for the native wayland-scanner
+below). Everything else (meson, ninja, autoconf, automake, libtool,
+pkg-config, python3) is already required for libhybris.
+
+The build does **not** use the host's `wayland-scanner`. The
+`wayland-scanner` stage builds it from our own pinned libwayland tree
+into `build/xwayland-<abi>/native/`, and `native.ini` (a meson native
+machine file, generated next to `android-cross.ini`) puts that prefix
+ahead of the host pkg-config path so every `native: true` scanner
+lookup resolves there. This is not just tidiness: libwayland's own
+cross build does `dependency('wayland-scanner', native: true, version:
+meson.project_version())`, and meson reads a bare `version:` as `==`,
+so a host wayland package that differs from our pin at all — e.g. host
+1.26.0 vs pinned 1.25.0 — fails the build outright. Bumping the pin to
+chase the host is not a fix; the next host upgrade (or any builder on
+an older distro) breaks it again.
 
 Bionic-built (NDK), not glibc — see `notes/xwayland.md` "Why bionic"
 for the rationale and the "Glibc alternative" section for the V4
