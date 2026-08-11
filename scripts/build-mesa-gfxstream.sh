@@ -89,7 +89,10 @@ done
     exit 1
 }
 
-tools=(meson ninja pkg-config wayland-scanner)
+# wayland-scanner deliberately absent: the host's version must match
+# the wayland pin exactly (meson reads Mesa's bare `version:` as `==`),
+# so we build the scanner from the pinned checkout below instead.
+tools=(meson ninja pkg-config)
 if [ "$WITH_GFXSTREAM" = "1" ]; then
     tools+=(cargo rustc)
 fi
@@ -103,6 +106,31 @@ done
 # ── Vendored Mesa + patches ──
 dep_apply_patches mesa "$PATCH_DIR"
 dep_ensure wayland-protocols
+
+# ── Native wayland-scanner from our pin ──
+# Mesa's loader/meson.build requires the wayland-scanner *program*
+# version to equal the wayland-scanner.pc version exactly, and the .pc
+# below says 1.25.0 (the wayland pin) — a host scanner even one release
+# ahead fails the whole build. Same reasoning as
+# build-xwayland.sh::stage_wayland_scanner: build the scanner from the
+# pinned wayland tree once and point the synthetic .pc at it.
+dep_ensure wayland
+SCANNER_PREFIX="$REPO_DIR/build/wayland-scanner-native"
+SCANNER_BIN="$SCANNER_PREFIX/bin/wayland-scanner"
+if [ ! -x "$SCANNER_BIN" ]; then
+    echo "==> building native wayland-scanner from pinned wayland"
+    rm -rf "$SCANNER_PREFIX"
+    meson setup "$SCANNER_PREFIX/build" "$(dep_dir wayland)" \
+        --prefix="$SCANNER_PREFIX" \
+        --libdir=lib \
+        --buildtype=release \
+        -Dscanner=true \
+        -Dlibraries=false \
+        -Dtests=false \
+        -Ddocumentation=false \
+        -Ddtd_validation=false
+    ninja -C "$SCANNER_PREFIX/build" install
+fi
 
 build_one() {
     local abi="$1"
@@ -243,8 +271,7 @@ EOF
     # dir (in-tree, untouched).
     local SYSROOT_WAYLAND_INC="$SYSROOT/usr/include"
     local WAYLAND_PROTOCOLS_DATADIR="$WAYLAND_PROTOCOLS_DIR"
-    local HOST_WAYLAND_SCANNER
-    HOST_WAYLAND_SCANNER="$(command -v wayland-scanner)"
+    local HOST_WAYLAND_SCANNER="$SCANNER_BIN"
 
     write_pc() {
         local name="$1" cflags="$2" libs="$3" version="${4:-1.0.0}"
@@ -338,8 +365,12 @@ EOF
             echo "==> [$abi] incomplete Mesa gfxstream builddir detected; reconfiguring"
             rm -rf "$BUILD_DIR_GFXSTREAM"
         fi
+        if [ -f "$BUILD_DIR_GFXSTREAM/build.ninja" ] && ! grep -q "wayland-scanner-native" "$BUILD_DIR_GFXSTREAM/build.ninja"; then
+            echo "==> [$abi] builddir not using the pinned wayland-scanner; reconfiguring"
+            rm -rf "$BUILD_DIR_GFXSTREAM"
+        fi
         if [ ! -f "$BUILD_DIR_GFXSTREAM/build.ninja" ]; then
-            PKG_CONFIG_LIBDIR="$PC_DIR" meson setup "$BUILD_DIR_GFXSTREAM" "$MESA_DIR" \
+            PKG_CONFIG_LIBDIR="$PC_DIR" PKG_CONFIG_PATH_FOR_BUILD="$PC_DIR" meson setup "$BUILD_DIR_GFXSTREAM" "$MESA_DIR" \
                 --cross-file "$OUT_DIR/cross.txt" \
                 -Dvulkan-drivers=gfxstream \
                 -Dgallium-drivers= \
@@ -415,8 +446,12 @@ EOF
         echo "==> [$abi] incomplete Mesa-Zink builddir detected; reconfiguring"
         rm -rf "$BUILD_DIR_ZINK"
     fi
+        if [ -f "$BUILD_DIR_ZINK/build.ninja" ] && ! grep -q "wayland-scanner-native" "$BUILD_DIR_ZINK/build.ninja"; then
+        echo "==> [$abi] builddir not using the pinned wayland-scanner; reconfiguring"
+        rm -rf "$BUILD_DIR_ZINK"
+    fi
     if [ ! -f "$BUILD_DIR_ZINK/build.ninja" ]; then
-        PKG_CONFIG_LIBDIR="$PC_DIR" meson setup "$BUILD_DIR_ZINK" "$MESA_DIR" \
+        PKG_CONFIG_LIBDIR="$PC_DIR" PKG_CONFIG_PATH_FOR_BUILD="$PC_DIR" meson setup "$BUILD_DIR_ZINK" "$MESA_DIR" \
             --cross-file "$OUT_DIR/cross.txt" \
             -Dvulkan-drivers= \
             -Dgallium-drivers=zink \
