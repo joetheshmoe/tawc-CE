@@ -63,6 +63,7 @@
 #include "fdtab.h"
 #include "io.h"
 #include "path.h"
+#include "path_scratch.h"
 #include "raw_sys.h"
 #include "syscalls_socket.h"
 #include "sysnr.h"
@@ -325,8 +326,9 @@ static long render_parent_fd_path(char *dst, size_t cap, int base_fd,
 	}
 	if (last < 0) return TAWC_ENAMETOOLONG;
 
-	char parent[1024];
-	if (last >= (long)sizeof parent) return TAWC_ENAMETOOLONG;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *parent = scratch->buf[0];
+	if (last >= TAWCROOT_PATH_SCRATCH_SIZE) return TAWC_ENAMETOOLONG;
 	for (long i = 0; i < last; i++) parent[i] = suffix[i];
 	parent[last] = '\0';
 	const char *leaf = suffix + last + 1;
@@ -417,9 +419,10 @@ static long translate_unix_sockaddr(const void *guest_addr, long addrlen,
 	 * a socket inside an RO bind stays legal. FOLLOW is independently
 	 * more kernel-faithful for connect — the kernel follows a leaf
 	 * symlink when connecting, PARENT_CREATE does not. */
-	char suffix[1024];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *suffix = scratch->buf[0];
 	tawcroot_path_result r = tawcroot_path_translate(
-		guest_path, suffix, sizeof suffix,
+		guest_path, suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 		persist ? TAWCROOT_PATH_PARENT_CREATE : TAWCROOT_PATH_FOLLOW,
 		persist ? TAWCROOT_PATH_INTENT_WRITE
 			: TAWCROOT_PATH_INTENT_READ);
@@ -543,9 +546,11 @@ static void reverse_translate_unix_sockaddr(struct tawc_sockaddr_un *kern_addr,
 	/* A tier-2/3 /proc/self/fd spelling (bound over-budget) expands
 	 * to its full host path first; the prefix walk below then maps
 	 * it into the guest view like any other host path. */
-	char full[1200];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *full = scratch->buf[0];
 	const char *hp = host;
-	long fl = expand_proc_fd_sun_path(host, hl, full, sizeof full);
+	long fl = expand_proc_fd_sun_path(host, hl, full,
+					  TAWCROOT_PATH_SCRATCH_SIZE);
 	if (fl > 0) {
 		hp = full;
 		hl = fl;

@@ -39,6 +39,11 @@
 #include "filter_build.h"
 #include "raw_sys.h"
 #include "sysnr.h"
+#include "stack_budget.h"
+
+/* Init-only: runs on tawcroot's own full-size stack, never on a
+ * guest thread's stack. */
+TAWCROOT_FRAME_CAP_EXEMPT
 
 /* The label sitting *immediately after* the SYSCALL/SVC inside the stub.
  *

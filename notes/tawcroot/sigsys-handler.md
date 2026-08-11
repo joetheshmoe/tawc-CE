@@ -371,10 +371,10 @@ async-signal-safe APIs. Our handler:
   copied through the guarded guest-copy helpers.
 
 What we **avoid**: malloc, stdio, locale, anything that takes a
-lock. Path buffers are fixed-size on the handler's stack
-(`PATH_MAX` is 4096; we can afford it). The bind table is built
-once at init and immutable thereafter; the few mutable runtime tables
-must be lock-free and handler-safe.
+lock. Path buffers come from the `path_scratch.c` static pool, not
+the handler stack (see §"Handler stack budget"). The bind table is
+built once at init and immutable thereafter; the few mutable runtime
+tables must be lock-free and handler-safe.
 
 Because guest glibc/ld.so is manually loaded into the same address
 space as a statically linked bionic tawcroot, the handler/runtime must
@@ -397,6 +397,44 @@ once and we either succeed or crash cleanly with a single nested
 frame. Either knob is defensible, but "non-recursive by default"
 is the safer one given our handler state is immutable-or-snapshot
 only and the handler has no genuine reason to re-enter itself.
+
+### Handler stack budget
+
+The handler runs on the trapping guest thread's own stack — whatever
+size the guest's runtime chose. musl's default thread stack is 128 KiB;
+the supported floor is the 16 KiB pinned by the
+`static_small_stack_open_argv1` integration fixture (a clone child with
+an explicit 16 KiB stack doing a path-bearing open). The kernel signal
+frame alone costs up to ~5 KiB of that (xsave on x86_64, SVE state on
+aarch64), so the entire handler call chain must fit in roughly 10 KiB.
+`sigaltstack` cannot rescue this: it is per-thread state the guest owns
+and can replace, so we can never rely on it being installed.
+
+The budget is enforced mechanically, not by convention: every
+production object compiles with `-Wframe-larger-than=1024 -Werror`
+(Makefile `TAWC_CFLAGS`, build.sh `COMMON_CFLAGS`), so a handler frame
+over 1 KiB is a build error. The rules, also stated in
+`include/stack_budget.h`:
+
+- Buffers sized by `PATH_MAX` or by a guest-controlled length come
+  from the `path_scratch.c` pool (128 slots × 4 × 4096 B in BSS,
+  lock-free CAS acquire), never the frame.
+- Fixed buffers under ~256 bytes are fine on the stack.
+- Recursive functions must keep per-level frames minimal — the cap
+  multiplies by depth. The deepest chain is exec's shebang
+  classification (`classify_loadable`, depth ≤ `TAWC_SHEBANG_MAX_DEPTH`
+  = 4); before the 2026-08 fix its ~2 KiB per-level frame times five
+  levels could alone approach a small guest stack.
+- Larger staging serialized by a lock goes in statics — the exec path
+  stages through exec_lock-guarded static buffers (`exec_handler.c`).
+- Init and `--exec-child` bootstrap code that provably never runs on a
+  guest stack (supervisor init, filter install, the loader below the
+  jump) opts out per file/region with `TAWCROOT_FRAME_CAP_EXEMPT`.
+  Never exempt anything reachable from the dispatch table.
+
+The testhost build compiles the same production sources plus smoke
+drivers that legitimately use big frames on the process's own stack, so
+it passes `-Wno-frame-larger-than`; the prod objects are the gate.
 
 ### Handler coding conventions
 

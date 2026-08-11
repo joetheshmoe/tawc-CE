@@ -1,10 +1,12 @@
 /* /proc/self/maps reverse-translator (pure).
  *
  * Lives in PROD_C_FOR_TESTS so the cleat unit-test orchestrator can
- * call into it directly under hosted glibc. No syscalls, no globals;
- * the caller hands in a context with the rootfs/bind tables. The
- * syscall-side glue (open the kernel file, allocate buffers, write a
- * memfd) lives in syscalls_fs.c.
+ * call into it directly under hosted glibc. No syscalls; the only
+ * global state touched is the path_scratch pool (the per-line
+ * translation buffer must not live on the handler stack). The caller
+ * hands in a context with the rootfs/bind tables. The syscall-side
+ * glue (open the kernel file, allocate buffers, write a memfd) lives
+ * in syscalls_fs.c.
  *
  * Match policy mirrors `route_through_binds` in path_orchestrate.c:
  * longest prefix wins, with a component-boundary check on the byte
@@ -17,6 +19,7 @@
 #include <stddef.h>
 #include "errno_neg.h"
 #include "io.h"
+#include "path_scratch.h"
 #include "proc_rewrite.h"
 #include "tawc_string.h"
 
@@ -168,6 +171,9 @@ long tawcroot_proc_maps_rewrite(
 {
 	if (!ctx || !in || !out) return TAWC_ENOSPC;
 
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *xlated = scratch->buf[0];
+
 	size_t out_off = 0;
 	size_t i       = 0;
 	while (i < in_len) {
@@ -198,9 +204,9 @@ long tawcroot_proc_maps_rewrite(
 			 * " (deleted)" tag, if any, is re-attached verbatim. */
 			size_t plen = split_deleted_tag(p, path_len);
 
-			char xlated[4096];
 			long rl = tawcroot_proc_reverse_translate_path(
-				ctx, p, plen, xlated, sizeof xlated);
+				ctx, p, plen, xlated,
+				TAWCROOT_PATH_SCRATCH_SIZE);
 			if (rl > 0) {
 				e = out_write(out, out_cap, &out_off,
 					      xlated, (size_t)rl);

@@ -61,7 +61,7 @@ TAWC_CFLAGS := \
     -O2 -fno-strict-aliasing -fno-stack-protector -fvisibility=hidden \
     -fno-exceptions -fno-asynchronous-unwind-tables -ffreestanding \
     $(TAWC_UBSAN) \
-    -Wall -Wextra -Werror -D_GNU_SOURCE \
+    -Wall -Wextra -Werror -Wframe-larger-than=1024 -D_GNU_SOURCE \
     -I$(SRC_T)/include \
     -MMD -MP $(EXTRA_CFLAGS)
 
@@ -70,7 +70,12 @@ TAWC_LDFLAGS := \
     -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,relro \
     -Wl,--image-base=$(HOST_BASE)
 
-TESTHOST_EXTRA_CFLAGS := -DTAWCROOT_TESTHOST=1 -I$(SRC_TH)/include
+# The handler frame cap (stack_budget.h) is enforced on the prod
+# objects; the testhost build compiles the same sources plus smoke/test
+# drivers that legitimately use big frames on the process's own stack,
+# so it drops the cap rather than annotating test code.
+TESTHOST_EXTRA_CFLAGS := -DTAWCROOT_TESTHOST=1 -I$(SRC_TH)/include \
+    -Wno-frame-larger-than
 
 # --- test-fixture list (single source of truth) ---
 #

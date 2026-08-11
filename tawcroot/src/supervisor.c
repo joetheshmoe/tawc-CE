@@ -24,6 +24,11 @@
 #include "supervisor.h"
 #include "tawc_uapi.h"
 #include "usercopy.h"
+#include "stack_budget.h"
+
+/* Init-only: runs on tawcroot's own full-size stack, never on a
+ * guest thread's stack. */
+TAWCROOT_FRAME_CAP_EXEMPT
 
 void tawcroot_supervisor_init(const struct tawcroot_supervisor_args *args)
 {

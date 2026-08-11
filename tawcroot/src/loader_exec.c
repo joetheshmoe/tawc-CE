@@ -246,6 +246,13 @@ static long resolve_shebangs(int initial_fd,
 	}
 }
 
+/* Everything from here down runs only post-execveat, on the fresh
+ * process's own full-size stack — never on a guest thread's stack. The
+ * shebang helpers above stay under the handler frame cap (classify_
+ * loadable calls tawcroot_shebang_read from the SIGSYS handler). */
+#include "stack_budget.h"
+TAWCROOT_FRAME_CAP_EXEMPT
+
 void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 {
 	/* Kernel page size (AT_PAGESZ), captured at startup. Drives ELF

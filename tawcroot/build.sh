@@ -236,6 +236,10 @@ COMMON_CFLAGS=(
     -Wall
     -Wextra
     -Werror
+    # Handler stack budget: SIGSYS handlers run on the guest thread's
+    # stack. See include/stack_budget.h for the rules and the exemption
+    # for init/bootstrap-only code.
+    -Wframe-larger-than=1024
     -I"$TAWCROOT_DIR/include"
 )
 COMMON_LDFLAGS=(
@@ -290,6 +294,9 @@ build_binary() {
         extra_cflags+=(
             -DTAWCROOT_TESTHOST=1
             -I"$TESTHOST_DIR/include"
+            # Frame cap enforced via the prod build; smoke/test drivers
+            # run on the process's own stack (see stack_budget.h).
+            -Wno-frame-larger-than
         )
         sources+=("${SRC_C_TESTHOST_EXTRA[@]}")
     fi

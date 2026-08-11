@@ -47,6 +47,11 @@
 #include "proctitle.h"
 #include "raw_sys.h"
 #include "supervisor.h"
+#include "stack_budget.h"
+
+/* Init-only: runs on tawcroot's own full-size stack, never on a
+ * guest thread's stack. */
+TAWCROOT_FRAME_CAP_EXEMPT
 
 #ifdef TAWCROOT_TESTHOST
 int tawcroot_testhost_main(int argc, char **argv);

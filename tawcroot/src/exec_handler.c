@@ -67,7 +67,9 @@ static long classify_elf(int fd)
 	uint8_t ebuf[sizeof(tawc_elf64_ehdr)];
 	long n = tawc_pread64(fd, ebuf, sizeof ebuf, 0);
 	if (n != (long)sizeof ebuf) return TAWC_ENOEXEC;
-	struct tawc_loader_image img;
+	/* Static: ~900 bytes, and this sits at the bottom of the recursive
+	 * shebang chain on the guest stack. Caller holds exec_lock. */
+	static struct tawc_loader_image img;
 	if (tawc_loader_parse_ehdr(ebuf, sizeof ebuf, &img) != 0)
 		return TAWC_ENOEXEC;  /* bad magic / class / unknown machine */
 	/* The parser accepts both supported machines (its unit tests are
@@ -163,16 +165,17 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 	 * handler-less and against the host filesystem — guest's
 	 * post-exec syscalls would either crash (no SIGSYS handler) or
 	 * route to host paths (no rootfs_fd). */
-	const char *bind_src_arr[TAWCROOT_EXEC_STATE_MAX_BINDS];
-	const char *bind_dst_arr[TAWCROOT_EXEC_STATE_MAX_BINDS];
-	unsigned char bind_ro_arr[TAWCROOT_EXEC_STATE_MAX_BINDS];
-	/* Static: 16 KB of name copies would blow the handler stack
-	 * budget. Exec already stages through static buffers (see the
-	 * thread-safety note in exec_handler.h). */
+	/* Static: over a kilobyte of pointer/name staging would bust the
+	 * handler frame cap (stack_budget.h). Exec stages through static
+	 * buffers — callers hold exec_lock (thread-safety note in
+	 * exec_handler.h). */
+	static const char *bind_src_arr[TAWCROOT_EXEC_STATE_MAX_BINDS];
+	static const char *bind_dst_arr[TAWCROOT_EXEC_STATE_MAX_BINDS];
+	static unsigned char bind_ro_arr[TAWCROOT_EXEC_STATE_MAX_BINDS];
 	static char shm_name_buf[TAWCROOT_EXEC_STATE_MAX_SHM]
 	                        [TAWCROOT_SHM_NAME_MAX + 1];
-	const char *shm_name_arr[TAWCROOT_EXEC_STATE_MAX_SHM];
-	int         shm_fd_arr[TAWCROOT_EXEC_STATE_MAX_SHM];
+	static const char *shm_name_arr[TAWCROOT_EXEC_STATE_MAX_SHM];
+	static int         shm_fd_arr[TAWCROOT_EXEC_STATE_MAX_SHM];
 	tawcroot_exec_state_extras extras = { 0 };
 
 	/* Virtual identity survives execve (fork inherits it for free;

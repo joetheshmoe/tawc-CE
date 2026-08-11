@@ -12,6 +12,11 @@
 #include "loader_exec.h"
 #include "loader_stack.h"
 #include "tawc_string.h"
+#include "stack_budget.h"
+
+/* Bootstrap-only: runs on tawcroot's own full-size stack, never on a
+ * guest thread's stack. */
+TAWCROOT_FRAME_CAP_EXEMPT
 
 #define MAX_AUXV     32       /* generous upper bound on entries we emit */
 
