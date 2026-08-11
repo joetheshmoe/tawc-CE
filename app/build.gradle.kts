@@ -320,6 +320,12 @@ dependencies {
     // via material; explicit because we compile against it directly.
     implementation("androidx.core:core-ktx:1.15.0")
 
+    // RecyclerView backs the licenses screen, whose ~750 KB attribution
+    // text is too large to lay out as one TextView. Already on the
+    // classpath transitively via material; pinned to the version that
+    // already resolves, so this only makes the existing edge explicit.
+    implementation("androidx.recyclerview:recyclerview:1.1.0")
+
     // Material Components powers the app's chrome on non-compositor screens:
     // Material3 DayNight theme (auto light/dark), MaterialToolbar with the
     // back-arrow up affordance, and MaterialButton for the accented /

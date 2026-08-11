@@ -116,6 +116,16 @@
             android:exported="false"
             android:label="@string/title_settings" />
 
+        <activity
+            android:name=".licenses.LicensesActivity"
+            android:exported="false"
+            android:label="@string/title_licenses" />
+
+        <activity
+            android:name=".licenses.LicenseSectionActivity"
+            android:exported="false"
+            android:label="@string/title_licenses" />
+
         <!-- Generic per-operation log viewer. Pure viewer: opening it
              never triggers any operation. Exported in debug builds
              only (placeholder set per build type in build.gradle.kts)

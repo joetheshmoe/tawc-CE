@@ -1,5 +1,6 @@
 package me.phie.tawc
 
+import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -13,8 +14,10 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.EnabledGraphicsBackends
+import me.phie.tawc.licenses.LicensesActivity
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.tawcCard
+import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
 
 /**
@@ -58,6 +61,10 @@ class SettingsActivity : AppCompatActivity() {
         )
         scaffold.content.addView(
             buildOutputScaleCard(),
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
+        )
+        scaffold.content.addView(
+            buildSectionCard(getString(R.string.settings_about), buildAboutSettings()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
 
@@ -173,6 +180,37 @@ class SettingsActivity : AppCompatActivity() {
         }
         column.addView(checkbox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         column.addView(detail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        return column
+    }
+
+    /**
+     * Application ID and version, plus the way into the licenses index.
+     * The identity line is selectable because the README asks bug
+     * reporters to quote their app version — make that copyable rather
+     * than something to squint at and retype.
+     */
+    private fun buildAboutSettings(): android.view.View {
+        val cardPad = (12 * resources.displayMetrics.density).toInt()
+        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(
+            TextView(this).apply {
+                text = getString(
+                    R.string.settings_about_detail,
+                    BuildConfig.APPLICATION_ID,
+                    BuildConfig.VERSION_NAME,
+                )
+                textSize = 14f
+                setTextIsSelectable(true)
+                setPadding(0, cardPad / 2, 0, cardPad)
+            },
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+        )
+        column.addView(
+            tonalButton(getString(R.string.settings_about_licenses)) {
+                startActivity(Intent(this, LicensesActivity::class.java))
+            },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT),
+        )
         return column
     }
 
