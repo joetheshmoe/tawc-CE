@@ -601,6 +601,15 @@ the APK that introduced the tawcroot binds bumps the stamp, so the
 first refresh wipes the recorded whole-dir copies and records the
 smaller manifest; reverting bumps it again and re-lays full copies.
 
+Verified on arm64 hardware (OnePlus 9, Android 14): the whole libhybris
+integration module passes with `/usr/lib/hybris` bound RO — including
+the `/usr/lib/hybris-vulkan-only/libvulkan.so.1` manifest LINK, which
+resolves *through* the bind — and `00_libhybris.json` still coexists
+with the distro's `50_mesa.json`. Wiping `<filesDir>/{libhybris,
+mesa-zink,mesa-gfxstream}` under a stopped app is self-healing: the
+next spawn re-extracts from the `assetBinds` gate instead of hitting
+tawcroot's `exit(93)`.
+
 ## CLI command interface
 
 Install and uninstall are driven from the host through the **dev exec
