@@ -58,6 +58,7 @@
     <string name="install_already_installed_at">Already installed at %1$s</string>
     <string name="install_use_cache_proxy">Use local cache proxy</string>
     <string name="install_external_binds_label">Storage binds: %1$d</string>
+    <string name="install_changeable_later">Can be changed later:</string>
     <string name="install_binds_grant_title">All files access not granted</string>
     <string name="install_binds_grant_message">A configured bind points at shared storage, which needs the \"All files access\" permission. Without it the distro will refuse to launch until access is granted or the bind is removed.</string>
     <string name="install_binds_grant_grant">Grant access</string>

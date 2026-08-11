@@ -234,6 +234,18 @@ class InstallActivity : AppCompatActivity() {
             )
         }
 
+        // Header for the trailing post-install-editable settings (ando,
+        // binds): both are also on the distro settings page, so say so
+        // here and spare the user agonizing over them mid-install.
+        s.addView(
+            TextView(this).apply {
+                text = getString(R.string.install_changeable_later)
+                textSize = 13f
+                alpha = 0.7f
+            },
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 4),
+        )
+
         // ando toggle (notes/ando.md) — shown for all methods and build
         // types, default off. Opt-in, fail-closed. Above the binds row.
         s.addView(buildAndoRow(), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
