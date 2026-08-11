@@ -139,6 +139,7 @@ class ProotMethod(context: Context) : InstallationMethod {
      * still apply.
      */
     override fun startInside(rootfs: String, command: String?, graphics: GraphicsBackend?): Process {
+        LinkerConfig.install(rootfs)
         // Pre-create the bind targets and proot's scratch dir. proot
         // refuses to bind to a guest path that doesn't exist on disk,
         // so we materialise `<rootfs>/usr/share/tawc` (the wayland
@@ -260,13 +261,13 @@ class ProotMethod(context: Context) : InstallationMethod {
         // paths. See [devShmDir] for why this is needed.
         addAll(listOf("-b", "$devShmDir:/dev/shm"))
         // libhybris bridges glibc-side mesa/Vulkan to bionic GPU
-        // drivers, which live in /apex + /vendor + /system + the
-        // bionic linker config under /linkerconfig. ChrootMounter
-        // bind-mounts these for the chroot path; we mirror the same
-        // set via proot's `-b` flag here. Bind targets that don't
-        // exist on the host (e.g. /system_ext on older Androids,
-        // /linkerconfig on pre-Q) are filtered out before this point
-        // — see [LIBHYBRIS_BIND_DIRS].
+        // drivers, which live in /apex + /vendor + /system.
+        // ChrootMounter bind-mounts these for the chroot path; we
+        // mirror the same set via proot's `-b` flag here. Bind targets
+        // that don't exist on the host (e.g. /system_ext on older
+        // Androids) are filtered out before this point — see
+        // [LIBHYBRIS_BIND_DIRS]. The bionic linker config is not bound:
+        // [LinkerConfig] copies it into the rootfs instead.
         for (dir in LIBHYBRIS_BIND_DIRS) {
             addAll(listOf("-b", dir))
         }
@@ -304,10 +305,10 @@ class ProotMethod(context: Context) : InstallationMethod {
          *
          * Filtered at class load to only paths that currently exist
          * on the host — proot rejects the whole argv if any bind
-         * source is missing, and `/system_ext` / `/linkerconfig`
-         * weren't introduced until Android 11. The emulator has all
-         * of these too, so the filter just guards against very old
-         * device images, not against running on the emulator (where
+         * source is missing, and `/system_ext` wasn't introduced until
+         * Android 11. The emulator has all of these too, so the
+         * filter just guards against very old device images, not
+         * against running on the emulator (where
          * libhybris itself is ABI-gated out — the libhybris asset
          * isn't shipped for x86_64).
          */
@@ -316,7 +317,6 @@ class ProotMethod(context: Context) : InstallationMethod {
             "/vendor",
             "/system",
             "/system_ext",
-            "/linkerconfig",
         ).filter { File(it).exists() }
     }
 }

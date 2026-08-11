@@ -501,8 +501,15 @@ you boot the AVD by hand without `emulator.sh start`, run `adb shell
   [InstallationMethod.startInside].
 - The emulator chroot uses minimal mounts (`dev`, `dev/pts`, `proc`,
   `sys`). It skips `apex`, `binderfs`, `vendor`, `system`,
-  `system_ext`, `linkerconfig` since libhybris doesn't run there
-  anyway.
+  `system_ext` since libhybris doesn't run there anyway.
+- That `isEmulator` gate is `ChrootMounter`'s alone, and deliberately
+  stays there: `TawcrootMethod` / `ProotMethod` bind the same set on
+  the emulator as on a phone even though nothing uses it. The uniform
+  list is why the emulator caught the `/linkerconfig` `ls` bug (see
+  [notes/installation.md](installation.md) "The bionic linker config"),
+  a phone-relevant bug an emulator gate would have hidden. Same for the
+  per-spawn linker-config copy: unconditional, so the emulator
+  exercises the code path phones depend on.
 
 ## Magisk policy persistence
 Once the policies row is in `/data/adb/magisk.db`, it survives

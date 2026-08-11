@@ -18,7 +18,7 @@ import android.os.Build
  *
  * This is the only piece that knows about the difference between an
  * emulator and a real device — emulators skip the libhybris-only mounts
- * (`vendor`, `system`, `system_ext`, `apex`, `binderfs`, `linkerconfig`)
+ * (`vendor`, `system`, `system_ext`, `apex`, `binderfs`)
  * because libhybris doesn't run on the gfxstream GPU stack.
  */
 object ChrootMounter {
@@ -74,13 +74,12 @@ object ChrootMounter {
                 """
                 mkdir -p "${'$'}ROOTFS/dev/binderfs" "${'$'}ROOTFS/vendor" \
                          "${'$'}ROOTFS/system" "${'$'}ROOTFS/system_ext" \
-                         "${'$'}ROOTFS/linkerconfig" "${'$'}ROOTFS/apex"
+                         "${'$'}ROOTFS/apex"
 
                 mount_if_needed /dev/binderfs "${'$'}ROOTFS/dev/binderfs"
                 mount_if_needed /vendor       "${'$'}ROOTFS/vendor"
                 mount_if_needed /system       "${'$'}ROOTFS/system"
                 mount_if_needed /system_ext   "${'$'}ROOTFS/system_ext"
-                mount_if_needed /linkerconfig "${'$'}ROOTFS/linkerconfig"
 
                 # /apex is recursive bind: each APEX is its own loop mount.
                 is_mounted "${'$'}ROOTFS/apex" || mount -o rbind,rslave /apex "${'$'}ROOTFS/apex"

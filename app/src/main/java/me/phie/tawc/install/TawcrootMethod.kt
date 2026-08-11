@@ -198,6 +198,10 @@ class TawcrootMethod(context: Context) : InstallationMethod {
      * tawcroot can open it as the bind src on a fresh device before
      * the compositor has run.
      *
+     * Linker config: [LinkerConfig] copies Android's generated bionic
+     * linker config into the rootfs for libhybris (and clears the
+     * `/linkerconfig` mountpoint older builds left behind).
+     *
      * Tmpdir: TMPDIR points inside the rootfs so getcwd reverse-
      * translation works cleanly and daemons pacman-key spawns
      * (gpg-agent) get a sane writable tmp. Set on the host-side
@@ -209,6 +213,7 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         assetBinds: List<BindSpec>,
         externalBinds: List<ExternalBind>,
     ): String {
+        LinkerConfig.install(rootfs)
         File(rootfs, GUEST_TAWC_SHARE_DIR.removePrefix("/")).mkdirs()
         for (dir in LIBHYBRIS_BIND_DIRS) {
             File(rootfs, dir.removePrefix("/")).mkdirs()
@@ -401,7 +406,6 @@ class TawcrootMethod(context: Context) : InstallationMethod {
             "/vendor",
             "/system",
             "/system_ext",
-            "/linkerconfig",
         ).filter { File(it).exists() }
 
         /** The full bind list, in declared order.

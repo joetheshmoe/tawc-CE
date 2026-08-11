@@ -16,7 +16,7 @@ class TawcrootBindSpecsTest {
     private val files = "/data/data/me.phie.tawc/files"
     private val share = "$files/share"
     private val hybrisDirs =
-        listOf("/apex", "/vendor", "/system", "/system_ext", "/linkerconfig")
+        listOf("/apex", "/vendor", "/system", "/system_ext")
     private val assetBinds = listOf(
         TawcrootMethod.BindSpec("$files/libhybris", "/usr/lib/hybris", ro = true),
         TawcrootMethod.BindSpec("$files/mesa-zink", "/usr/lib/mesa-zink", ro = true),
@@ -44,7 +44,6 @@ class TawcrootBindSpecsTest {
                 "/vendor:/vendor:ro",
                 "/system:/system:ro",
                 "/system_ext:/system_ext:ro",
-                "/linkerconfig:/linkerconfig:ro",
                 "$files/libhybris:/usr/lib/hybris:ro",
                 "$files/mesa-zink:/usr/lib/mesa-zink:ro",
                 "$files/mesa-gfxstream:/usr/lib/gfxstream:ro",
@@ -75,7 +74,6 @@ class TawcrootBindSpecsTest {
                 "/vendor:/vendor:ro",
                 "/system:/system:ro",
                 "/system_ext:/system_ext:ro",
-                "/linkerconfig:/linkerconfig:ro",
                 "$share:/usr/share/tawc",
                 "$share/xtmp/.X11-unix:/tmp/.X11-unix",
             ),

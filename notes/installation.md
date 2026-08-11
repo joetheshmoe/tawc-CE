@@ -555,6 +555,9 @@ App-shipped files inside the rootfs split two ways:
   JSON (`/usr/share/glvnd/egl_vendor.d/00_libhybris.json`), the
   `/usr/lib/hybris-vulkan-only/libvulkan.so.1` symlink, the ando
   client, `/usr/lib/tawc/bashrc`.
+- **Android's bionic linker config** — not app-shipped at all, and
+  copied from the host per *spawn* rather than per install. See "The
+  bionic linker config" below.
 
 Two properties decide which side a file lands on:
 
@@ -609,6 +612,91 @@ with the distro's `50_mesa.json`. Wiping `<filesDir>/{libhybris,
 mesa-zink,mesa-gfxstream}` under a stopped app is self-healing: the
 next spawn re-extracts from the `assetBinds` gate instead of hitting
 tawcroot's `exit(93)`.
+
+## The bionic linker config
+
+libhybris's vendored Q linker reads Android's boot-generated linker
+config to build the bionic namespaces vendor GPU blobs dlopen across.
+`LinkerConfig.install(rootfs)` copies that one file
+(`/linkerconfig/ld.config.txt`, ~220 KB) into the rootfs at
+`/usr/lib/hybris-config/ld.config.txt` at the top of every spawn, for
+all three methods (`TawcrootMethod.prepareSpawn` — which covers both
+`startInside` and the in-app terminal's `ptyShellExec` —
+`ProotMethod.startInside`, `ChrootMethod.startInside`). The fork's
+`kLdGeneratedConfigFilePath` (`hybris/common/q/linker.cpp`, the only
+`/linkerconfig` reference in the whole fork) points at that path;
+the two must be changed together.
+
+**Why not the bind it replaced.** `/linkerconfig` used to be one of
+`LIBHYBRIS_BIND_DIRS`. Android's real `/linkerconfig` is
+`linkerconfig_file` on tmpfs, and AOSP's `domain.te` grants every
+domain `linkerconfig_file:file r_file_perms` plus
+`linkerconfig_file:dir search` — but no `getattr` on the dir. So
+anything that stats the entries of `/` inside the rootfs got
+
+    ls: cannot access '/linkerconfig': Permission denied
+    d??????????   ? ?    ?       ?            ? linkerconfig
+
+with `avc: denied { getattr } … tclass=dir` in the kernel log. Files
+*inside* read fine, which is why nothing but `ls` ever noticed: hybris
+`file_exists()`es and reads `ld.config.txt` and never touches the dir.
+It took this long to surface because only *interactive* `ls` hits it —
+coreutils takes the plain listing from `getdents` `d_type`, and stats
+each entry only when color is on **and** `LS_COLORS` is set (the
+sticky / other-writable / orphan classes aren't derivable from
+`d_type`). Every interactive shell sets `LS_COLORS`; the broker and
+test paths are non-interactive. `linker_config::test_ls_root_stats_
+every_entry` (tests/integration) now encodes the interactive shape.
+
+**Why `/usr/lib/hybris-config/`, not `/usr/lib/hybris/`** with the rest
+of the hybris runtime: under tawcroot that dir is an RO bind of
+`<filesDir>/libhybris` (see *Copy vs bind*), and a bind replaces
+whatever the rootfs has underneath, so a rootfs-side copy there would
+be invisible to the guest. A sibling dir keeps one code path for all
+three methods.
+
+**Why copying is not staler than binding.** Android regenerates
+`/linkerconfig` only during boot and it is static for the rest of
+uptime; a reboot kills the app and every guest; the hybris linker
+reads the file once per process start. The copy is skipped when the
+destination already matches the source's size and mtime, so steady
+state costs two stats, and it is written via a temp file + rename so a
+concurrent spawn can never read a torn file.
+
+**Unconditional** — no ABI or emulator gate, so the emulator exercises
+the same path phones do (see notes/emulator.md). On a pre-Android-11
+host there is no `/linkerconfig` to copy and hybris falls back to
+`init_default_namespace_no_config` plus the configured
+`--with-default-hybris-ld-library-path`, exactly as it did before. A
+copy failure is one warning log and the same fallback, never a failed
+spawn.
+
+One accepted behavior change: bound, the file was read-only; copied,
+in-rootfs root can rewrite it. Not a new boundary — the guest already
+owns its rootfs and `LD_LIBRARY_PATH`, and the config only shapes that
+guest's own bionic namespaces.
+
+The other libhybris binds (`/apex /vendor /system /system_ext`) can't
+move the same way: their paths are baked into `ld.config.txt`'s own
+namespace search paths, into vendor blobs' absolute-path dlopens, and
+into libhardware's compiled-in `/vendor/lib64/hw`. They also don't
+share the bug — their labels are world-readable; only the
+boot-generated `linkerconfig_file` tmpfs denies dir `getattr`.
+
+Verify the guest is reading the copy with
+`HYBRIS_LD_DEBUG=1 <gl client>`: the hybris linker prints
+`[ Reading linker config "/usr/lib/hybris-config/ld.config.txt" ]`
+to stderr (`HYBRIS_LD_DEBUG`, not `HYBRIS_LOGGING_LEVEL` — it gates
+the linker's own `INFO` macro via `g_ld_debug_verbosity`).
+
+Verified 2026-08-10 on the OnePlus 9 (Android 14, which ships no
+`/system/etc/ld.config.<arch>.txt` at all — `/linkerconfig` really is
+the only source there) and on the x86_64 emulator: `ls -l /` exits 0
+with no `linkerconfig` row under all three methods, the copy matches
+the host file byte-count, `weston-simple-egl` under `HYBRIS_LD_DEBUG=1`
+prints the read of the new path, and the whole libhybris integration
+module (EGL / Vulkan / GTK / Firefox / SuperTuxKart hardware-buffer
+smokes) still passes.
 
 ## CLI command interface
 

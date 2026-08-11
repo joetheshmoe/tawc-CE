@@ -132,7 +132,7 @@ extern size_t tawcroot_rootfs_host_path_len;
  *
  * Fixed size — no malloc reachable from the handler. The current cap
  * comfortably fits the proot-style mount set (/system /vendor /apex
- * /system_ext /linkerconfig /dev /proc /sys + a couple of app-data
+ * /system_ext /dev /proc /sys + a couple of app-data
  * passthroughs). Bumps go through this header. */
 #define TAWCROOT_MAX_BINDS 32
 

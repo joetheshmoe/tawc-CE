@@ -83,7 +83,10 @@ Local checkout: `./deps/libhybris`. Host-side cross-build (output ships
 in the APK as an asset; each rootfs sees it at `/usr/lib/hybris/` —
 an RO bind under tawcroot, a real-file copy from
 `TawcInstaller`/`LibhybrisInstallProvider` under proot/chroot):
-`scripts/build-libhybris.sh`.
+`scripts/build-libhybris.sh`. Its bionic linker also needs Android's
+generated linker config, copied per spawn to
+`/usr/lib/hybris-config/ld.config.txt` — notes/installation.md "The
+bionic linker config".
 
 Loading chain in a client:
 ```

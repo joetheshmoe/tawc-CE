@@ -93,7 +93,7 @@
     <string name="install_method_info_proot_title">proot (dev only)</string>
     <string name="install_method_info_proot_body">Userspace chroot via the Termux fork of proot. Rootless and broadly compatible &#8212; pacman, package builds and most desktop apps work. Slower than tawcroot because every syscall is intercepted via ptrace. Available in debug builds for comparison; not shipped to release users.</string>
     <string name="install_method_info_chroot_title">chroot (requires root, dev only)</string>
-    <string name="install_method_info_chroot_body">Real Linux chroot via su. Fastest path with no syscall translation overhead, but only works on rooted devices (Magisk / Phh-style su). The chroot mounts /apex, /vendor, /system and /linkerconfig from Android so libhybris GPU drivers can resolve their dependencies. Available in debug builds; not shipped to release users.</string>
+    <string name="install_method_info_chroot_body">Real Linux chroot via su. Fastest path with no syscall translation overhead, but only works on rooted devices (Magisk / Phh-style su). The chroot mounts /apex, /vendor and /system from Android so libhybris GPU drivers can resolve their dependencies. Available in debug builds; not shipped to release users.</string>
 
     <string name="distro_info_row_label">Label:</string>
     <string name="distro_info_row_distro">Distro:</string>

@@ -13,7 +13,6 @@ exec /data/app/~~<hash>/lib/arm64-v8a/libtawcroot.so \
      -b /vendor:/vendor \
      -b /apex:/apex \
      -b /system_ext:/system_ext \
-     -b /linkerconfig:/linkerconfig \
      -b /dev:/dev \
      -b /proc:/proc \
      -b /sys:/sys \
@@ -29,9 +28,12 @@ proot-method's mount set (`notes/proot.md`), including `/proc`,
 Since we don't actually *mount* anything, this is just bind-table
 entries; the host paths get directly aliased into the rootfs view.
 As in `ProotMethod`, bind sources that do not exist on a given
-Android version (`/system_ext`, `/linkerconfig`, sometimes
-`/dev/binderfs`) are filtered out when rendering the wrapper rather
-than making tawcroot reject the whole argv.
+Android version (`/system_ext`, sometimes `/dev/binderfs`) are
+filtered out when rendering the wrapper rather than making tawcroot
+reject the whole argv. Android's `/linkerconfig` is deliberately *not*
+in the set — the one file libhybris wants from it is copied into the
+rootfs per spawn instead (see [installation.md](../installation.md)
+"The bionic linker config").
 
 **`/dev/shm` is emulated in-handler via `memfd_create`** — no host
 directory bound, no flash-write cost. Path-bearing syscalls under

@@ -49,6 +49,7 @@ class ChrootMethod(context: Context) : InstallationMethod {
      * own session.
      */
     override fun startInside(rootfs: String, command: String?, graphics: GraphicsBackend?): Process {
+        LinkerConfig.install(rootfs)
         // Magisk's su inherits the calling process's mount namespace,
         // so we wrap with `unshare -m` so any leaked binds go away when
         // the script exits. (See [Su.run]'s docstring for context.)

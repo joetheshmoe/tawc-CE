@@ -14,8 +14,10 @@ and as a fallback during tawcroot bring-up — it is not exposed to
 release users. chroot is in the same boat (see [notes/chroot.md](chroot.md)).
 
 libhybris-driven GPU acceleration works under proot too: `ProotMethod`
-binds `/apex /vendor /system /system_ext /linkerconfig` into the
+binds `/apex /vendor /system /system_ext` into the
 rootfs view (mirroring `ChrootMounter.mountScript`'s mount set),
+plus the per-spawn linker-config copy every method does
+(see [notes/installation.md](installation.md) "The bionic linker config"),
 and `TawcInstaller`/`LibhybrisInstallProvider` copies the libhybris
 tree into both methods' rootfses (real files at `/usr/lib/hybris/`,
 not symlinks). EGL, GLES, and
