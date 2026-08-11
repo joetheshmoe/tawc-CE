@@ -118,6 +118,12 @@ mid-install.
   fail-closed slot), or round-tripping a JSON list via activity result
   (from `InstallActivity`, pre-install). Shows a grant notice with a
   settings deep link whenever the all-files grant is missing.
+  The list scrolls between the intro text and a bottom-anchored "Add
+  bind" button (weighted `ScrollView`, so they never overlap — every
+  card can be scrolled fully clear of the button). The scroll view has
+  a vertical fading edge: without it a card clipped at the viewport's
+  bottom edge sits flush against the solid button and reads as hidden
+  *behind* it — twice misfiled as a layout bug.
 - `DirectoryPickerActivity` — minimal in-app browser over real paths
   for picking host dirs (deliberately not SAF; see above). Host paths
   can also be typed, which matters when the grant isn't given yet and

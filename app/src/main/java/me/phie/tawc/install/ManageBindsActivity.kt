@@ -98,6 +98,12 @@ class ManageBindsActivity : AppCompatActivity() {
         listColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val scroll = ScrollView(this).apply {
             isFillViewport = true
+            // The list's bottom edge butts straight up against the
+            // "Add bind" button, so a card clipped mid-way there reads
+            // as hidden *behind* the button rather than scrolled off.
+            // Fade the clipped edge instead.
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength((24 * resources.displayMetrics.density).toInt())
             addView(listColumn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
         scaffold.content.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
