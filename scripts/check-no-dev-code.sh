@@ -33,10 +33,13 @@ check_classes_dir() {
 
 check_apk() {
     local apk="$1" apkanalyzer sdk_root local_sdk hits
-    local_sdk="$(
-        sed -nE 's/^[[:space:]]*sdk\.dir[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' local.properties 2>/dev/null |
-            head -n1
-    )"
+    local_sdk=""
+    if [[ -f local.properties ]]; then
+        local_sdk="$(
+            sed -nE 's/^[[:space:]]*sdk\.dir[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' local.properties |
+                head -n1
+        )"
+    fi
     sdk_root="${local_sdk:-${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}}"
     apkanalyzer="$(command -v apkanalyzer || true)"
     if [[ -z "$apkanalyzer" ]]; then

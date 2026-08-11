@@ -39,7 +39,7 @@ done
 
 [ -f "$KEYSTORE_PATH" ] || { echo "ERROR: keystore not found at $KEYSTORE_PATH" >&2; exit 1; }
 
-BUILD_TOOLS_VER="$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+BUILD_TOOLS_VER="$(ls -1 "$ANDROID_HOME/build-tools" 2>/dev/null | sort -V | tail -1 || true)"
 [ -n "$BUILD_TOOLS_VER" ] || { echo "ERROR: no build-tools under $ANDROID_HOME/build-tools" >&2; exit 1; }
 ZIPALIGN="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VER/zipalign"
 APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VER/apksigner"
