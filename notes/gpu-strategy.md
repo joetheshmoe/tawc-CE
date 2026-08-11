@@ -80,8 +80,9 @@ OS and Ubuntu Touch. **Actively maintained** -- Android 16 support merged March 
 
 We use [our fork](https://github.com/wmww/libhybris) with stock Android TLS fixes.
 Local checkout: `./deps/libhybris`. Host-side cross-build (output ships
-in the APK as an asset; each rootfs gets a real-file copy at
-`/usr/lib/hybris/` from `TawcInstaller`/`LibhybrisInstallProvider`):
+in the APK as an asset; each rootfs sees it at `/usr/lib/hybris/` —
+an RO bind under tawcroot, a real-file copy from
+`TawcInstaller`/`LibhybrisInstallProvider` under proot/chroot):
 `scripts/build-libhybris.sh`.
 
 Loading chain in a client:
@@ -216,8 +217,8 @@ in `vulkanplatform_wayland.so`, presents via `android_wlegl`. Used in Sailfish O
 **Status on tawc (OnePlus 9 / Adreno 660 / Android 16 LineageOS):** ✅ working.
 - `scripts/build-libhybris.sh` builds the `vulkan` subdir and stages
   `libvulkan.so.1` and `libhybris/vulkanplatform_wayland.so` in the APK asset
-  tree; `TawcInstaller`/`LibhybrisInstallProvider` copies them into
-  each rootfs at `/usr/lib/hybris/` (a tawc-owned namespace).
+  tree; each rootfs sees them at `/usr/lib/hybris/` (a tawc-owned
+  namespace) via the tawcroot RO bind, or a copy under proot/chroot.
 - `vulkaninfo --summary` works end-to-end: `android_dlopen("libvulkan.so")` succeeds,
   the Adreno Vulkan driver enumerates as GPU0, `VK_KHR_wayland_surface` is advertised.
   Covered by `test_vulkaninfo_loads_android_driver`.

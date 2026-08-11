@@ -26,7 +26,9 @@ internal object AndoInstallProvider : TawcInstallProvider {
 
     const val GUEST_BIN_PATH = "/usr/local/bin/ando"
 
-    override fun entries(context: Context): List<TawcInstall> {
+    /** Method-independent: a single file in a distro-managed dir, so
+     *  it's copied under every method. */
+    override fun entries(context: Context, methodKey: String): List<TawcInstall> {
         val src = File(context.applicationInfo.nativeLibraryDir, "libando.so")
         if (!src.isFile) return emptyList()
         return listOf(

@@ -33,13 +33,17 @@ internal object MesaZinkInstallProvider : TawcInstallProvider {
      *  wins over the distro's. */
     const val GUEST_LIB_DIR = "/usr/lib/mesa-zink"
 
-    override fun entries(context: Context): List<TawcInstall> {
+    override fun entries(context: Context, methodKey: String): List<TawcInstall> {
         // Build-time disabled (`-PtawcGraphics=...` without libhybris-zink):
         // no APK asset shipped, nothing to install. Avoids hitting
         // `ensureMesaZinkExtracted`'s "no asset" branch (which would log
         // a misleading "LIBHYBRIS_ZINK backend unavailable" line on every
         // app start).
         if (!EnabledGraphicsBackends.libhybrisZink) return emptyList()
+        // tawcroot binds the whole dir RO instead ([TawcrootMethod.assetBinds]);
+        // this provider's entire output is that dir, so there's nothing
+        // left to copy. Gate kept above so the log stays honest either way.
+        if (methodKey == TawcrootMethod.KEY) return emptyList()
         if (!CompositorService.ensureMesaZinkExtracted(context)) return emptyList()
         val srcDir = File(context.filesDir, "mesa-zink").canonicalFile
         if (!srcDir.isDirectory) return emptyList()

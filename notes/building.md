@@ -272,8 +272,10 @@ on the source tree.
 Bundled into the APK by the Gradle `packLibhybris` task as
 `app/src/main/assets/libhybris/arm64-v8a.tar`. Extracted at
 first compositor start by `CompositorService.ensureLibhybrisExtracted`,
-and copied into each rootfs by `TawcInstaller`/`LibhybrisInstallProvider`
-at install time and on first app start after an APK upgrade.
+then exposed in each rootfs at `/usr/lib/hybris/` — bound RO under
+tawcroot, copied by `TawcInstaller`/`LibhybrisInstallProvider` under
+proot/chroot (at install time and on first app start after an APK
+upgrade).
 End-to-end automatic — no manual steps after `scripts/build-app.sh`.
 
 #### Why the cross-compile and not the NDK
@@ -332,8 +334,9 @@ scripts/build-mesa-gfxstream.sh --clean   # wipe builddir
 Output: `build/mesa-<arch>/install/usr/lib/gfxstream/libvulkan_gfxstream.so`
 + `.../gfxstream_vk_icd.<arch>.json` (co-located, no separate
 `share/vulkan/icd.d/` - `VK_ICD_FILENAMES` points at it explicitly).
-Bundled into the APK by Gradle's `packMesaGfxstream<Abi>` and laid into
-every rootfs by `BridgeInstallProvider`. The same script also builds
+Bundled into the APK by Gradle's `packMesaGfxstream<Abi>` and exposed
+in every rootfs at `/usr/lib/gfxstream/` (tawcroot RO bind;
+`BridgeInstallProvider` copy under proot/chroot). The same script also builds
 the optional Mesa-Zink tarball consumed by `libhybris-zink` unless
 Gradle passes `--no-zink` via `-PtawcGraphics=...`. Passing
 `--no-gfxstream` builds only Mesa-Zink; passing both `--no-gfxstream`
@@ -506,10 +509,11 @@ old socket and show black screens — kill and relaunch them.
 
 Installing or upgrading the APK causes the next app start to re-extract
 bundled runtime assets and re-run `TawcInstaller` against existing
-rootfs metadata when the `tawcStamp` changes. Libhybris is copied as
-real files into each rootfs at `/usr/lib/hybris/`; gfxstream and
-Mesa-Zink use the same provider/manifest mechanism under their own
-`/usr/lib/...` namespaces.
+rootfs metadata when the `tawcStamp` changes. Under tawcroot the
+libhybris / gfxstream / Mesa-Zink trees are RO-bound from the extract,
+so they track the APK with no per-rootfs copy; proot/chroot rootfses
+get real-file copies under the same `/usr/lib/...` namespaces via the
+provider/manifest mechanism. See notes/installation.md "Copy vs bind".
 
 ## Device setup
 

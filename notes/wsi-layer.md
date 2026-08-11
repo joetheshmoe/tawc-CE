@@ -29,14 +29,15 @@ the rootfs at install time by `TawcInstaller` /
 `LibhybrisInstallProvider` from the APK-extracted tree
 (`<filesDir>/libhybris/gl-shims/`, generated host-side by
 `scripts/build-libhybris.sh`).
-`/usr/lib/hybris` is where libhybris's main `.so`s live as real files
-copied from the same APK-extracted tree (libEGL.so, libGLESv2.so,
-libGLESv1_CM.so, libvulkan.so.1, plus eglplatform_*.so and
-vulkanplatform_*.so plugins under `/usr/lib/hybris/libhybris/`).
-TawcInstaller runs again on every app start; an APK upgrade with a
-new libhybris bumps the `tawcStamp` and the rootfs's previous set
-gets wiped + re-copied. See `notes/installation.md`'s CONFIGURING
-stage and "Why copy, not bind" for the design call.
+`/usr/lib/hybris` is where libhybris's main `.so`s live (libEGL.so,
+libGLESv2.so, libGLESv1_CM.so, libvulkan.so.1, plus eglplatform_*.so
+and vulkanplatform_*.so plugins under `/usr/lib/hybris/libhybris/`) —
+under tawcroot as an RO bind of the APK-extracted tree at
+`<filesDir>/libhybris`, under proot/chroot as real files copied from
+it. Either way the tree tracks the APK: the bind by construction, the
+copies via `TawcInstaller`'s `tawcStamp` refresh on app start. See
+`notes/installation.md`'s CONFIGURING stage and "Copy vs bind" for the
+design call.
 
 No `HYBRIS_*_DIR` env-var overrides are needed:
 `scripts/build-libhybris.sh` runs `--prefix=/usr/lib/hybris

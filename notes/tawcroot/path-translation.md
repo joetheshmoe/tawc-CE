@@ -899,10 +899,11 @@ translations into it refuse with `-EROFS`. The rootfs itself and
 2-field binds stay read/write. Consumers: the built-in
 system-partition binds (`TawcrootMethod.bindSpecs` marks the
 `LIBHYBRIS_BIND_DIRS` set `:ro` — kernel-faithful `EROFS` on dirs
-that are host-RO on real Android), user `ExternalBind`s that
-expose shared storage without trusting every guest program with
-deletes (planned), a possible copy→bind revert for APK-shipped
-assets (notes/installation.md §"Why copy, not bind"), and the
+that are host-RO on real Android), the APK-shipped GPU asset dirs
+`TawcrootMethod.assetBinds` puts at `/usr/lib/{hybris,mesa-zink,gfxstream}`
+in place of per-rootfs copies (notes/installation.md §"Copy vs
+bind"), user `ExternalBind`s that expose shared storage without
+trusting every guest program with deletes (planned), and the
 per-bind input plans/tawcroot-landlock.md threads into
 `allowed_access`.
 

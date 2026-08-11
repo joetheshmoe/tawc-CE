@@ -133,7 +133,11 @@ set_required_packages() {
                 x11-apps dbus-x11 python3
                 libgl1-mesa-dri mesa-vulkan-drivers fonts-dejavu-core
             )
-            PACKAGE_CHECK_CMD="dpkg-query -W ${REQUIRED_PKGS[*]} >/dev/null 2>&1"
+            # `dpkg-query -W <pkg>` exits 0 for a merely *known* name (dpkg
+            # status `un`), so a never-installed package passed the check and
+            # the test failed later with "command not found". Require the
+            # status to actually be `installed`.
+            PACKAGE_CHECK_CMD="for p in ${REQUIRED_PKGS[*]}; do [ \"\$(dpkg-query -W -f='\${db:Status-Status}' \"\$p\" 2>/dev/null)\" = installed ] || exit 1; done"
             INSTALL_CMD="apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends ${REQUIRED_PKGS[*]}"
             ;;
         *)

@@ -5,14 +5,17 @@ import me.phie.tawc.compositor.CompositorService
 import java.io.File
 
 /**
- * Lays the APK-bundled libhybris tree into a rootfs as real files,
- * not symlinks (the previous `LibhybrisLinker` approach) and not
- * binds (the bind approach was abandoned — see `notes/installation.md`
- * "Why copy, not bind"). Installs to `/usr/lib/hybris/` (a tawc-owned
- * namespace; `/usr/local/lib/` stays free for the user's own installs
- * inside the rootfs).
+ * Lays the APK-bundled libhybris tree into a rootfs at
+ * `/usr/lib/hybris/` (a tawc-owned namespace; `/usr/local/lib/` stays
+ * free for the user's own installs inside the rootfs).
  *
- * Two kinds of entries:
+ * Under [TawcrootMethod] the tree itself is not copied at all —
+ * [TawcrootMethod.assetBinds] binds `<filesDir>/libhybris` there
+ * read-only and only the two coexist entries below are installed. The
+ * copy path below is what proot/chroot get (no RO bind primitive);
+ * see `notes/installation.md` "Copy vs bind".
+ *
+ * Three kinds of entries:
  *   - Every regular file under `<filesDir>/libhybris/` (ie. the
  *     `.so` files plus the `gl-shims/` and `libhybris/` subdir
  *     contents) is a [TawcInstall.Type.COPY].
@@ -86,7 +89,7 @@ internal object LibhybrisInstallProvider : TawcInstallProvider {
 }
 """
 
-    override fun entries(context: Context): List<TawcInstall> {
+    override fun entries(context: Context, methodKey: String): List<TawcInstall> {
         if (!CompositorService.ensureLibhybrisExtracted(context)) return emptyList()
         // Asset tar's contents are now flat (libEGL.so, libhybris/,
         // gl-shims/, … at the tar root) so the extracted tree lives
@@ -100,7 +103,17 @@ internal object LibhybrisInstallProvider : TawcInstallProvider {
         // their own files. Walking everything as files (no dir
         // entries) means [TawcInstaller] creates parent dirs on
         // demand and never has to reason about dir lifecycle.
-        walk(srcLib, srcLib, GUEST_LIB_DIR, entries)
+        //
+        // Skipped under tawcroot: [TawcrootMethod.assetBinds] binds
+        // `<filesDir>/libhybris` at [GUEST_LIB_DIR] read-only, which
+        // supplies the same tree without the per-rootfs copy. The two
+        // entries below still get copied for every method — they have
+        // to coexist with distro-managed siblings (glvnd) or aren't
+        // worth a bind of their own (the vulkan-only symlink, which
+        // resolves through the [GUEST_LIB_DIR] bind at runtime).
+        if (methodKey != TawcrootMethod.KEY) {
+            walk(srcLib, srcLib, GUEST_LIB_DIR, entries)
+        }
 
         // glvnd vendor JSON — materialise on the host first so we
         // have a stable file to copy from. Sibling to <filesDir>/libhybris/

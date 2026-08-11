@@ -16,12 +16,20 @@ import java.io.IOException
  * symlink dance, etc.) with a single uniform mechanism that:
  *
  *  - Asks every registered [TawcInstallProvider] for a manifest of
- *    files it wants in the rootfs.
+ *    files it wants in the rootfs, given the install's method key.
  *  - Copies / symlinks each entry into the rootfs's actual on-disk
  *    tree (NOT a bind mount — entries become per-rootfs-owned files,
  *    so a misbehaving rootfs can't corrupt the source).
+ *
  *  - Records the manifest in [Installation.tawcInstalls] alongside
  *    a [Installation.tawcStamp] tag.
+ *
+ * Whole app-owned dirs (`/usr/lib/{hybris,mesa-zink,gfxstream}`) are
+ * NOT copied under [TawcrootMethod] — [TawcrootMethod.assetBinds]
+ * binds them in read-only instead, so a tawcroot manifest holds only
+ * the files that must coexist with distro-managed siblings (plus
+ * ando / bashrc). proot and chroot still get full copies. See
+ * notes/installation.md "Copy vs bind".
  *
  * The stamp is whatever [CompositorService.currentExtractStamp]
  * returns — a `versionCode + lastUpdateTime` pair that bumps on every
@@ -34,8 +42,11 @@ import java.io.IOException
  *      via per-rootfs stamp comparison; idempotent no-op when the
  *      rootfs is already up to date).
  *
- * Not called from [InstallationMethod.startInside] — entries are a
- * hot path and this work shouldn't run on every shell invocation.
+ * Not called from [InstallationMethod.startInside] — enumerating
+ * entries walks whole asset trees and shouldn't run on every shell
+ * invocation. ([TawcrootMethod.assetBinds] does call the far cheaper
+ * `ensure*Extracted` helpers per spawn, since tawcroot needs its bind
+ * sources to exist; that's a stamp read, not a tree walk.)
  */
 internal object TawcInstaller {
     private const val TAG = "tawc-installer"
@@ -124,7 +135,7 @@ internal object TawcInstaller {
         val newManifest = mutableListOf<TawcInstall>()
         for (provider in providers) {
             val entries = try {
-                provider.entries(context)
+                provider.entries(context, installation.method)
             } catch (e: Exception) {
                 throw IOException(
                     "tawc-installer: provider ${provider.name} failed to enumerate: $e",
@@ -281,6 +292,15 @@ internal interface TawcInstallProvider {
      * (e.g. an ABI-gated provider on a device whose ABI it doesn't
      * support). Called fresh each time [TawcInstaller.installInto]
      * runs; results aren't cached.
+     *
+     * [methodKey] is the install's [Installation.method]. Providers
+     * that ship a whole app-owned dir return fewer (or no) entries
+     * under [TawcrootMethod.KEY], because [TawcrootMethod] binds those
+     * dirs in read-only instead — see notes/installation.md "Copy vs
+     * bind". Every spawn surface resolves the method from install
+     * metadata, so a per-method manifest can't go stale from a
+     * cross-method entry. Providers with no whole-dir output ignore
+     * the parameter.
      */
-    fun entries(context: Context): List<TawcInstall>
+    fun entries(context: Context, methodKey: String): List<TawcInstall>
 }

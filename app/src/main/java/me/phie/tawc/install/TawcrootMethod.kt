@@ -4,6 +4,7 @@ import android.content.Context
 import me.phie.tawc.AppPaths
 import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.Settings
+import me.phie.tawc.compositor.CompositorService
 import java.io.File
 import java.io.IOException
 
@@ -42,6 +43,9 @@ import java.io.IOException
  * See `notes/tawcroot/README.md` for the full design + phasing.
  */
 class TawcrootMethod(context: Context) : InstallationMethod {
+    /** Retained for the spawn-time [assetBinds] guard — the extract
+     *  helpers need a Context and run per spawn, not per construction. */
+    private val appContext = context.applicationContext
     private val appPaths = AppPaths.from(context)
     private val tawcShare: String = appPaths.shareDir.absolutePath
     private val store = InstallationStore(context)
@@ -78,13 +82,16 @@ class TawcrootMethod(context: Context) : InstallationMethod {
      *   /system/bin/setsid <tawcroot> -r <rootfs> \
      *       -b /dev:/dev -b /proc:/proc -b /sys:/sys \
      *       -b /apex:/apex:ro [-b /vendor:/vendor:ro ...] \
+     *       [-b <filesDir>/libhybris:/usr/lib/hybris:ro ...] \
      *       -b <appData>/share:/usr/share/tawc \
      *       -- /bin/bash -lc <command>
      *
      * Bind set mirrors [ProotMethod] minus the proot-only tweaks
-     * (`/dev/shm`, link2symlink, kill-on-exit) and plus `:ro` on the
-     * system-partition binds (proot has no RO primitive). Libhybris
-     * bind dirs are filtered to existing host paths at class-load.
+     * (`/dev/shm`, link2symlink, kill-on-exit), plus `:ro` on the
+     * system-partition binds (proot has no RO primitive), plus the
+     * app-shipped GPU asset dirs proot/chroot get as copies instead
+     * ([assetBinds]). Libhybris bind dirs are filtered to existing
+     * host paths at class-load.
      *
      * `setsid` upholds the rootfs-session invariant
      * (notes/rootfs-sessions.md): every chroot invocation runs in
@@ -101,11 +108,12 @@ class TawcrootMethod(context: Context) : InstallationMethod {
      */
     override fun startInside(rootfs: String, command: String?, graphics: GraphicsBackend?): Process {
         val externalBinds = externalBindsFor(rootfs)
+        val assetBinds = assetBinds()
         val andoHostDir = store.andoHostDir(rootfs)
-        val tmpdir = prepareSpawn(rootfs, externalBinds)
+        val tmpdir = prepareSpawn(rootfs, assetBinds, externalBinds)
         val argv = buildList {
             add("/system/bin/setsid")
-            addAll(rootfsArgv(rootfs, graphics, externalBinds, andoHostDir))
+            addAll(rootfsArgv(rootfs, graphics, assetBinds, externalBinds, andoHostDir))
             add("/bin/bash")
             if (command != null) {
                 add("-lc"); add(command)
@@ -154,10 +162,11 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         command: String? = null,
     ): PtyExec {
         val externalBinds = externalBindsFor(rootfs)
+        val assetBinds = assetBinds()
         val andoHostDir = store.andoHostDir(rootfs)
-        val tmpdir = prepareSpawn(rootfs, externalBinds)
+        val tmpdir = prepareSpawn(rootfs, assetBinds, externalBinds)
         val argv = buildList {
-            addAll(rootfsArgv(rootfs, graphics, externalBinds, andoHostDir))
+            addAll(rootfsArgv(rootfs, graphics, assetBinds, externalBinds, andoHostDir))
             add("TERM=xterm-256color")
             add("COLORTERM=truecolor")
             add("/bin/bash")
@@ -195,10 +204,17 @@ class TawcrootMethod(context: Context) : InstallationMethod {
      * tawcroot process — not propagated into the rootfs (env -i drops
      * it; the bash shell gets TMPDIR=/tmp from RootfsEnv instead).
      */
-    private fun prepareSpawn(rootfs: String, externalBinds: List<ExternalBind>): String {
+    private fun prepareSpawn(
+        rootfs: String,
+        assetBinds: List<BindSpec>,
+        externalBinds: List<ExternalBind>,
+    ): String {
         File(rootfs, GUEST_TAWC_SHARE_DIR.removePrefix("/")).mkdirs()
         for (dir in LIBHYBRIS_BIND_DIRS) {
             File(rootfs, dir.removePrefix("/")).mkdirs()
+        }
+        for (bind in assetBinds) {
+            File(rootfs, bind.dst.removePrefix("/")).mkdirs()
         }
         for (bind in externalBinds) {
             File(rootfs, bind.guestPath.removePrefix("/")).mkdirs()
@@ -216,12 +232,15 @@ class TawcrootMethod(context: Context) : InstallationMethod {
     private fun rootfsArgv(
         rootfs: String,
         graphics: GraphicsBackend?,
+        assetBinds: List<BindSpec>,
         externalBinds: List<ExternalBind>,
         andoHostDir: String?,
     ): List<String> = buildList {
         add(tawcrootBin)
         addAll(listOf("-r", rootfs))
-        for (spec in bindSpecs(externalBinds, andoHostDir)) addAll(listOf("-b", spec.arg()))
+        for (spec in bindSpecs(assetBinds, externalBinds, andoHostDir)) {
+            addAll(listOf("-b", spec.arg()))
+        }
         add("--")
         addAll(RootfsEnv.envArgv(RootfsEnv.Method.TAWCROOT, graphics ?: Settings.graphicsBackend))
     }
@@ -275,6 +294,53 @@ class TawcrootMethod(context: Context) : InstallationMethod {
     }
 
     /**
+     * RO binds for the whole app-owned asset dirs — `/usr/lib/hybris`,
+     * `/usr/lib/mesa-zink`, `/usr/lib/gfxstream`. Under tawcroot these
+     * replace the per-rootfs copies the matching [TawcInstallProvider]s
+     * lay down for proot/chroot: ~30 MB less per install, no copy churn
+     * per APK upgrade, and a guest that can no longer corrupt its own
+     * GPU stack (writes get `EROFS`). See notes/installation.md "Copy
+     * vs bind".
+     *
+     * Each bind is gated on its `ensure*Extracted` call because
+     * tawcroot opens every bind src at startup and `exit(93)`s if one
+     * is missing, while [TawcInstaller]'s stamp fast-path skips the
+     * extract entirely — so the src guarantee has to be made here, per
+     * spawn. Steady-state cost is an asset-existence probe plus a small
+     * stamp-file read per dir, which is noise next to forking a login
+     * shell; not memoizing also keeps "dir deleted under a running app"
+     * self-healing, since the next spawn re-extracts. `false` (no asset
+     * for this ABI, or the backend is build-disabled) simply omits the
+     * bind, matching what the provider would have installed.
+     *
+     * The extract's `.version` stamp file becomes guest-visible inside
+     * the bound dirs (the copy path skipped it). Read-only dotfile in a
+     * tawc-owned namespace; harmless.
+     */
+    private fun assetBinds(): List<BindSpec> = buildList {
+        // No EnabledGraphicsBackends.libhybris gate: LibhybrisInstallProvider
+        // has none either (LIBHYBRIS_ZINK needs this tree too), and the
+        // asset probe already covers a build that ships no libhybris.
+        if (CompositorService.ensureLibhybrisExtracted(appContext)) {
+            add(assetBind("libhybris", LibhybrisInstallProvider.GUEST_LIB_DIR))
+        }
+        if (EnabledGraphicsBackends.libhybrisZink &&
+            CompositorService.ensureMesaZinkExtracted(appContext)
+        ) {
+            add(assetBind("mesa-zink", MesaZinkInstallProvider.GUEST_LIB_DIR))
+        }
+        if (EnabledGraphicsBackends.gfxstream &&
+            CompositorService.ensureMesaGfxstreamExtracted(appContext)
+        ) {
+            add(assetBind("mesa-gfxstream", BridgeInstallProvider.GUEST_LIB_DIR))
+        }
+    }
+
+    /** `<filesDir>/<name>` bound read-only at [guestDir]. */
+    private fun assetBind(name: String, guestDir: String): BindSpec =
+        BindSpec(File(appContext.filesDir, name).absolutePath, guestDir, ro = true)
+
+    /**
      * Pure-Kotlin extract via [ProotArchiveExtractor]. Same rationale
      * as [ProotMethod.extractBootstrap] — toybox tar's eager
      * directory-mode application breaks app-uid extraction inside
@@ -304,9 +370,11 @@ class TawcrootMethod(context: Context) : InstallationMethod {
     }
 
     private fun bindSpecs(
+        assetBinds: List<BindSpec>,
         externalBinds: List<ExternalBind>,
         andoHostDir: String?,
-    ): List<BindSpec> = bindSpecs(tawcShare, LIBHYBRIS_BIND_DIRS, externalBinds, andoHostDir)
+    ): List<BindSpec> =
+        bindSpecs(tawcShare, LIBHYBRIS_BIND_DIRS, assetBinds, externalBinds, andoHostDir)
 
     companion object {
         const val KEY = "tawcroot"
@@ -338,7 +406,8 @@ class TawcrootMethod(context: Context) : InstallationMethod {
 
         /** The full bind list, in declared order.
          *
-         * Order: /dev → /proc → /sys → libhybris dirs → tawc share → X11.
+         * Order: /dev → /proc → /sys → libhybris dirs → app asset dirs
+         * → tawc share → ando → X11 → external.
          * No `/dev/shm` bind: tawcroot's SIGSYS handler emulates POSIX
          * shm in-process via memfd_create (`tawcroot/src/shm.c`).
          *
@@ -347,6 +416,11 @@ class TawcrootMethod(context: Context) : InstallationMethod {
          * an accidental guest write into a kernel-faithful `EROFS`
          * instead of the host's EROFS/EACCES grab-bag. `/dev`, `/proc`,
          * `/sys` stay RW (ptmx, /proc/self, tunables).
+         *
+         * [assetBinds] (the app-shipped GPU stacks under `<filesDir>`,
+         * see the instance method of the same name) are grouped with
+         * them: same RO dlopen-source role, and still ahead of the
+         * external binds so a user bind can't shadow them.
          *
          * The tawc share bind exposes JUST `<appData>/share/` (wayland
          * socket, Xwayland's xtmp dir) at the in-rootfs canonical path
@@ -370,6 +444,7 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         internal fun bindSpecs(
             tawcShare: String,
             libhybrisDirs: List<String>,
+            assetBinds: List<BindSpec>,
             externalBinds: List<ExternalBind>,
             andoHostDir: String?,
         ): List<BindSpec> = buildList {
@@ -377,6 +452,7 @@ class TawcrootMethod(context: Context) : InstallationMethod {
             add(BindSpec("/proc", "/proc"))
             add(BindSpec("/sys", "/sys"))
             for (dir in libhybrisDirs) add(BindSpec(dir, dir, ro = true))
+            addAll(assetBinds)
             add(BindSpec(tawcShare, GUEST_TAWC_SHARE_DIR))
             // Per-distro ando socket dir ([InstallationStore.andoHostDir],
             // non-null only when ando is enabled, read fresh per spawn) at

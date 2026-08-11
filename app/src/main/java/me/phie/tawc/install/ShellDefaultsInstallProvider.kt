@@ -16,7 +16,9 @@ import java.io.File
 internal object ShellDefaultsInstallProvider : TawcInstallProvider {
     override val name: String = "shell-defaults"
 
-    override fun entries(context: Context): List<TawcInstall> {
+    /** Method-independent: a single file in a distro-managed dir, so
+     *  it's copied under every method. */
+    override fun entries(context: Context, methodKey: String): List<TawcInstall> {
         val src = File(context.filesDir, "shell-defaults/bashrc")
         src.parentFile?.mkdirs()
         src.writeText(ShellDefaults.GUEST_BASHRC_CONTENT)

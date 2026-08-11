@@ -481,16 +481,36 @@ class CompositorService : Service() {
             return "v${info.longVersionCode}@${info.lastUpdateTime}"
         }
 
+        /** Asset names whose "nothing shipped for this ABI" line has
+         *  already been logged in this process. The `ensure*Extracted`
+         *  helpers run per spawn now (see [isStampStale]), and on a
+         *  build/ABI that ships no asset the miss is permanent — one
+         *  line is the whole story. */
+        private val loggedMissingAssets: MutableSet<String> =
+            java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+
+        private fun logMissingAssetOnce(name: String, message: String) {
+            if (loggedMissingAssets.add(name)) Log.i(TAG, message)
+        }
+
         /**
          * Returns true if `<destDir>/.version` is missing or doesn't
-         * match [currentStamp]. Logs the comparison so a stale extract
-         * is one logcat line away if this ever misfires again.
+         * match [currentStamp]. Logs the comparison when it decides to
+         * extract, so a stale extract is one logcat line away if this
+         * ever misfires again. The up-to-date case stays silent: since
+         * [me.phie.tawc.install.TawcrootMethod.assetBinds] calls the
+         * `ensure*Extracted` helpers to guarantee its bind sources,
+         * this runs a few times per spawn and logging it would be pure
+         * noise (the on-disk stamp equals the current one by
+         * definition, so there's nothing to report).
          */
         private fun isStampStale(name: String, destDir: File, currentStamp: String): Boolean {
             val versionFile = File(destDir, ".version")
             val onDisk = if (versionFile.exists()) versionFile.readText().trim() else "missing"
             val stale = onDisk != currentStamp
-            Log.i(TAG, "$name extract: stamp=$currentStamp on-disk=$onDisk extracting=$stale")
+            if (stale) {
+                Log.i(TAG, "$name extract: stamp=$currentStamp on-disk=$onDisk; extracting")
+            }
             return stale
         }
 
@@ -565,7 +585,7 @@ class CompositorService : Service() {
                 false
             }
             if (!available) {
-                Log.i(TAG, "No libhybris asset shipped for ABI $abi; skipping extract")
+                logMissingAssetOnce("libhybris", "No libhybris asset shipped for ABI $abi; skipping extract")
                 return false
             }
 
@@ -664,7 +684,10 @@ class CompositorService : Service() {
                 false
             }
             if (!available) {
-                Log.i(TAG, "No mesa-gfxstream asset shipped for ABI $abi; gfxstream backend unavailable")
+                logMissingAssetOnce(
+                    "mesa-gfxstream",
+                    "No mesa-gfxstream asset shipped for ABI $abi; gfxstream backend unavailable",
+                )
                 return false
             }
 
@@ -714,7 +737,10 @@ class CompositorService : Service() {
                 false
             }
             if (!available) {
-                Log.i(TAG, "No mesa-zink asset shipped for ABI $abi; LIBHYBRIS_ZINK backend unavailable")
+                logMissingAssetOnce(
+                    "mesa-zink",
+                    "No mesa-zink asset shipped for ABI $abi; LIBHYBRIS_ZINK backend unavailable",
+                )
                 return false
             }
 

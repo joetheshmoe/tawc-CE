@@ -317,16 +317,19 @@ reported as `InstallProgress` to the UI and per-line logged to logcat
      `/root/.bashrc` + `/root/.bash_profile` once at configure time
      with stubs that source the app-managed
      `/usr/lib/tawc/bashrc` — see [ShellDefaultsInstallProvider].)
-   - `TawcInstaller.installInto` lays down the APK-bundled libhybris
-     tree (and its glvnd vendor JSON) as **real files** inside the
-     rootfs, not symlinks and not bind mounts. Same generic mechanism
-     handles any future "ship file X into every rootfs" need. Files
-     from `LibhybrisInstallProvider` land at
-     `/usr/lib/hybris/{*.so,gl-shims/,libhybris/}` (a tawc-owned
-     namespace; `/usr/local/lib/` stays free for the user's own
-     installs — same pattern for `/usr/lib/gfxstream/` shipped by
-     [BridgeInstallProvider] and `/usr/lib/mesa-zink/` shipped by
-     [MesaZinkInstallProvider]) plus `/usr/share/glvnd/egl_vendor.d/00_libhybris.json`.
+   - `TawcInstaller.installInto` lays down the APK-shipped per-rootfs
+     files as **real files** inside the rootfs, not symlinks. Same
+     generic mechanism handles any future "ship file X into every
+     rootfs" need. Providers see the install's method key, because the
+     three whole app-owned dirs — `/usr/lib/hybris/{*.so,gl-shims/,libhybris/}`
+     from `LibhybrisInstallProvider`, `/usr/lib/gfxstream/` from
+     [BridgeInstallProvider], `/usr/lib/mesa-zink/` from
+     [MesaZinkInstallProvider] (all tawc-owned namespaces;
+     `/usr/local/lib/` stays free for the user's own installs) — are
+     copied only under proot/chroot and RO-**bound** under tawcroot
+     (see *Copy vs bind* below). `/usr/share/glvnd/egl_vendor.d/00_libhybris.json`
+     is copied under every method: it has to coexist with the distro's
+     `50_mesa.json`.
      [AndoInstallProvider] ships the ando client at
      `/usr/local/bin/ando` (notes/ando.md).
      [ShellDefaultsInstallProvider] ships `/usr/lib/tawc/bashrc`
@@ -344,7 +347,7 @@ reported as `InstallProgress` to the UI and per-line logged to logcat
      `CompositorService.currentExtractStamp`); `TawcInstaller` is
      also called from `TawcApplication.onCreate` so an APK upgrade
      wipes the old set and re-copies fresh on first app start. See
-     *Why copy, not bind* below for the design call.
+     *Copy vs bind* below for the design call.
    - `rm -rf` of bootstrap cruft: `/boot`, `/usr/lib/firmware`,
      `/usr/lib/modules`, `/var/cache/pacman/pkg`, and the docs/locale
      trees under `/usr/share`. ~1.8 GB of immediate reclaim before
@@ -536,32 +539,55 @@ rootfs has the same uid as the bind src files). Limiting the bind to
 `<appData>/share/` keeps the cross-rootfs writable surface scoped to
 "things the compositor explicitly publishes for clients."
 
-## Why copy, not bind
+## Copy vs bind
 
-App-shipped files inside the rootfs (libhybris, glvnd vendor JSON,
-anything else `TawcInstaller` might gain in future) are **copied**
-in, not bound. Copies are per-rootfs-owned, so a rootfs that overwrites
-or deletes them doesn't affect other rootfses or the host-side asset
-extract. The cost is disk (~12 MB per arm64 install) and a brief
-copy on each app upgrade.
+App-shipped files inside the rootfs split two ways:
 
-Binding was the obvious shape (no install-time work, source-of-truth
-auto-tracks the APK) but ran into two structural problems:
+- **Whole app-owned dirs** — `/usr/lib/hybris`, `/usr/lib/mesa-zink`,
+  `/usr/lib/gfxstream`, each a `<filesDir>` asset extract with no
+  distro-managed siblings. Under tawcroot these are **RO binds**
+  (`TawcrootMethod.assetBinds`, `-b <filesDir>/<name>:<guest dir>:ro`).
+  Saves ~30 MB per arm64 install, drops the per-upgrade copy churn,
+  and makes the guest unable to corrupt its own GPU stack (writes get
+  `EROFS`). proot and chroot still get copies — proot has no RO bind
+  primitive.
+- **Everything else** — copied under every method. The glvnd vendor
+  JSON (`/usr/share/glvnd/egl_vendor.d/00_libhybris.json`), the
+  `/usr/lib/hybris-vulkan-only/libvulkan.so.1` symlink, the ando
+  client, `/usr/lib/tawc/bashrc`.
 
-1. **No read-only bind at decision time.** tawcroot has since grown
-   one — `-b SRC:DST:ro`, enforced centrally at the translation layer
-   (notes/tawcroot/path-translation.md §"Read-only binds"); proot
-   still has none. Historically, without RO, anything inside the
-   rootfs could write through the bind into shared host state, which
-   is what forced the copy design.
-2. **Bind = replacement, not merge.** A single-file bind into a
+Two properties decide which side a file lands on:
+
+1. **Bind = replacement, not merge.** A single-file bind into a
    distro-managed dir like `/usr/share/glvnd/egl_vendor.d/` doesn't
    show up in `readdir` at the parent (tawcroot's `getdents` is a
    passthrough; the kernel only sees the on-disk dir). And a whole-dir
    bind would shadow files the distro package (e.g. libglvnd) wants
-   to ship there, breaking package install.
+   to ship there, breaking package install. So anything that has to
+   coexist with distro siblings stays a copy.
+2. **RO binds exist only in tawcroot** — `-b SRC:DST:ro`, enforced
+   centrally at the translation layer
+   (notes/tawcroot/path-translation.md §"Read-only binds"). Without
+   RO, a rootfs could write through the bind into shared host state,
+   which is why proot/chroot keep copies (per-rootfs-owned, so one
+   rootfs clobbering them affects nothing else).
 
-`TawcInstaller` records its writes in `Installation.tawcInstalls` (a
+Mechanics of the split: `TawcInstallProvider.entries(context,
+methodKey)` gets the install's `Installation.method`, and the three
+whole-dir providers return their tree only when the key isn't
+`tawcroot`. Every spawn surface resolves the method from install
+metadata, so a per-method manifest can't go stale via a cross-method
+entry. On the bind side, tawcroot opens each bind src at startup and
+`exit(93)`s if one is missing, while `TawcInstaller`'s stamp fast-path
+skips extraction — so `assetBinds` gates each bind on the matching
+`CompositorService.ensure*Extracted` call, per spawn (an asset probe
+plus a stamp read, noise next to forking a login shell). No asset for
+the ABI, or a build-disabled backend → the bind is simply omitted.
+Two accepted consequences: the extract's `.version` stamp becomes
+guest-visible inside each bound dir, and guest writes into those dirs
+now fail `EROFS`.
+
+`TawcInstaller` records its copies in `Installation.tawcInstalls` (a
 list of `{src, dest, type=COPY|LINK}`) tagged with the
 `tawcStamp` from `CompositorService.currentExtractStamp(context)` —
 which combines `versionCode + lastUpdateTime` so every `adb install
@@ -570,26 +596,10 @@ which combines `versionCode + lastUpdateTime` so every `adb install
 slot; mismatched stamp → wipe the previous manifest's dests, run all
 providers, copy/link, persist. Empty manifest (no libhybris on
 x86_64) still records the stamp so subsequent starts hit the no-op
-fast path.
-
-The RO bind primitive now exists in tawcroot (`-b SRC:DST:ro`), so
-this can revert to a whole-dir RO bind for everything except files
-that have to coexist with distro-managed siblings in the same dir
-(problem 2 is unchanged — bind = replacement, not merge). Decide in
-`TawcInstaller` whether the disk/update-churn win justifies it.
-Two further costs found when this was last assessed (2026-07,
-plans/tawcroot-default-binds-ro.md piece 2, deferred):
-
-- The manifest is method-agnostic. Dropping the libhybris COPY/LINK
-  entries removes `/usr/lib/hybris` from proot/chroot rootfses too —
-  proot has no RO primitive and doesn't bind the asset dir — so the
-  provider API would need to learn the install method first.
-- tawcroot opens every bind src at spawn and refuses to start if one
-  is missing. `<filesDir>/libhybris/` existence is only assured by the
-  `TawcInstaller` refresh path (`ensureLibhybrisExtracted` inside
-  `provider.entries`), which the stamp fast-path skips — a bound
-  asset dir needs its own spawn-time guard, which is exactly the
-  hot-path work `TawcInstaller`'s kdoc keeps off `startInside`.
+fast path. That flow is also the migration path in both directions:
+the APK that introduced the tawcroot binds bumps the stamp, so the
+first refresh wipes the recorded whole-dir copies and records the
+smaller manifest; reverting bumps it again and re-lays full copies.
 
 ## CLI command interface
 

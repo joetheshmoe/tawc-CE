@@ -92,14 +92,16 @@ without `/dev/dri/` already exists in upstream — the `kopper_init_screen`
   - soname symlinks for all three
 - Tarred into `assets/mesa-zink/<abi>/mesa-zink.tar` by Gradle's
   `packMesaZink<Abi>`, extracted to `<filesDir>/mesa-zink/` by
-  `CompositorService.ensureMesaZinkExtracted`, laid into each rootfs at
-  `/usr/lib/mesa-zink/` by `MesaZinkInstallProvider`.
+  `CompositorService.ensureMesaZinkExtracted`, exposed in each rootfs at
+  `/usr/lib/mesa-zink/` — RO bind under tawcroot, `MesaZinkInstallProvider`
+  copy under proot/chroot (notes/installation.md "Copy vs bind").
 - Mesa-with-Zink at runtime: distro Mesa is what's already in `/usr/lib/`,
   ours layers on top via `LD_LIBRARY_PATH`.
 
-Always installed alongside libhybris and gfxstream-vk (~20 MB per
-rootfs): same logic as the gfxstream provider — toggling
-`GraphicsBackend` is an env change, not a manifest change.
+Always shipped alongside libhybris and gfxstream-vk: same logic as the
+gfxstream provider — toggling `GraphicsBackend` is an env change, not a
+manifest change. Free under tawcroot (one bind of the shared extract);
+~20 MB per rootfs under proot/chroot, which copy.
 
 ## Build-time flag
 
