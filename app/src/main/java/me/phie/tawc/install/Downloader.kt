@@ -38,8 +38,8 @@ object Downloader {
         } catch (e: java.io.IOException) {
             // HEAD failed (likely DNS / network). If we already have a
             // non-empty cache, trust it — the integrity layer
-            // (CrossMirrorMd5 / signature verify) catches a corrupt
-            // file. Without this fallback an offline retry of an
+            // ([SignatureVerifier.verify]) catches a corrupt file.
+            // Without this fallback an offline retry of an
             // already-downloaded bootstrap aborts here.
             if (dest.exists() && dest.length() > 0) {
                 Log.d(TAG, "Cached (HEAD failed: ${e.message}): ${dest.name} (${dest.length()} bytes)")

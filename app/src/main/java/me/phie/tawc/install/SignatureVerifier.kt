@@ -11,7 +11,6 @@ import org.bouncycastle.openpgp.PGPSignature
 import org.bouncycastle.openpgp.PGPSignatureList
 import org.bouncycastle.openpgp.PGPUtil
 import org.bouncycastle.openpgp.bc.BcPGPObjectFactory
-import org.bouncycastle.openpgp.operator.bc.BcKeyFingerprintCalculator
 import org.bouncycastle.openpgp.operator.bc.BcPGPContentVerifierBuilderProvider
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -32,11 +31,18 @@ import me.phie.tawc.R
  * enough to lay down inside the chroot the user then runs Wayland apps
  * in — see notes/installation.md "Bootstrap integrity".
  *
- * The PGP consumer is [me.phie.tawc.install.distro.arch.ArchLinuxX86_64],
- * whose `.tar.zst.sig` is signed by Pierre Schmitz's Arch developer
- * key (fingerprint `3E80 CA1A 8B89 F69C BA57  D98A 76A5 EF90 5444 9A5C`,
- * shipped at `res/raw/arch_signing_key.asc`). The other distros use
- * the weaker variants — see [BootstrapVerification] and
+ * The PGP consumers are both Arch flavours:
+ *
+ *  - [me.phie.tawc.install.distro.arch.ArchLinuxX86_64] — `.tar.zst.sig`
+ *    signed by Pierre Schmitz's Arch developer key (fingerprint
+ *    `3E80 CA1A 8B89 F69C BA57  D98A 76A5 EF90 5444 9A5C`, shipped at
+ *    `res/raw/arch_signing_key.asc`).
+ *  - [me.phie.tawc.install.distro.arch.ArchLinuxArm] — `.tar.gz.sig`
+ *    signed by the ALARM build system key (fingerprint
+ *    `68B3 537F 39A3 13B3 E574  D067 7719 3F15 2BDB E6A6`, shipped at
+ *    `res/raw/archlinuxarm_signing_key.asc`).
+ *
+ * The remaining distros use [BootstrapVerification.Sha256] — see
  * notes/installation.md "Bootstrap integrity" for who declares what.
  */
 object SignatureVerifier {
@@ -49,14 +55,15 @@ object SignatureVerifier {
      * exception — the gate is there to keep unverified bytes out of
      * the rootfs.
      *
-     * @param mirrorProxy debug-builds-only knob: when non-null, every
-     *   HTTP fetch here (PGP `.sig`, ALARM `.md5` sidecars) is routed
-     *   through it. Defeats the cross-mirror "two independent operators"
-     *   integrity story by funnelling both endpoints through one nginx,
-     *   but keeps the dev cache coherent: without this, the proxy would
-     *   serve a stale tarball while verification URLs fetched fresh
-     *   upstream digests, producing a permanent md5 mismatch until the
-     *   proxy was manually cleared. Release builds always pass null.
+     * @param mirrorProxy debug-builds-only knob: when non-null, the PGP
+     *   `.sig` fetch here is routed through it. This does not weaken the
+     *   check — the signature is still verified against the shipped
+     *   key, so a proxy that tampers with the `.sig` fails closed — but
+     *   it keeps the dev cache coherent: without it the proxy would
+     *   serve a cached tarball while the `.sig` was fetched fresh
+     *   upstream, and since both Arch bootstrap URLs are mutable
+     *   `latest` paths that pair would mismatch until the proxy was
+     *   manually cleared. Release builds always pass null.
      */
     fun verify(
         context: Context,
@@ -73,7 +80,6 @@ object SignatureVerifier {
             )
 
             is BootstrapVerification.Pgp -> verifyPgp(context, tarball, verification, mirrorProxy)
-            is BootstrapVerification.CrossMirrorMd5 -> verifyCrossMirrorMd5(tarball, verification, mirrorProxy)
             is BootstrapVerification.Sha256 -> verifySha256(tarball, verification)
         }
     }
@@ -130,12 +136,7 @@ object SignatureVerifier {
         val sigBytes = downloadBytes(mirrorProxy?.wrap(v.signatureUrl) ?: v.signatureUrl)
         val signature = parseDetachedSignature(sigBytes)
         val keys = loadKeyRing(context, v.keyResource)
-        val key = keys.getPublicKey(signature.keyID)
-            ?: throw IOException(
-                "Bootstrap signature key id 0x${java.lang.Long.toHexString(signature.keyID)} " +
-                    "not present in shipped keyring (resource ${v.keyResource}). " +
-                    "Either the upstream rotated their signing key, or this is a forged tarball.",
-            )
+        val key = resolveSigningKey(keys, signature, v.keyResource)
 
         signature.init(BcPGPContentVerifierBuilderProvider(), key)
         tarball.inputStream().use { input ->
@@ -159,124 +160,6 @@ object SignatureVerifier {
                 "0x${java.lang.Long.toHexString(signature.keyID).uppercase()}",
         )
     }
-
-    /**
-     * Defence-in-depth for distros that publish only an MD5 sidecar
-     * (ALARM aarch64). For each [BootstrapVerification.CrossMirrorMd5.checksumUrls]:
-     *
-     *   1. Fetch each `.md5` over HTTPS — TLS+cert validation eliminates
-     *      passive MITM on each individual fetch.
-     *   2. Require all of them to declare the **same** hex digest. Two
-     *      independent mirror operators (or two different CDN POPs) would
-     *      have to be concurrently compromised AND publish the same
-     *      forged digest for this to lie. Each `.md5` is a 32-character
-     *      hex blob; we strip the trailing filename Arch's md5 format
-     *      includes.
-     *   3. Compute the tarball's MD5 and require the match.
-     *
-     * MD5 is broken against collision attacks — an attacker who controls
-     * both the tarball and the digest can grind a colliding pair. They
-     * do **not** control the digest here (it's published by upstream
-     * before they ever see the tarball), so only the much harder
-     * second-preimage attack matters, and MD5 still resists that. PGP
-     * is still preferred (see issue) — this is a transitional check
-     * until upstream signs.
-     */
-    private fun verifyCrossMirrorMd5(
-        tarball: File,
-        v: BootstrapVerification.CrossMirrorMd5,
-        mirrorProxy: me.phie.tawc.install.MirrorProxy?,
-    ) {
-        require(v.checksumUrls.size >= 2) {
-            "CrossMirrorMd5 needs at least 2 independent checksum URLs"
-        }
-
-        val digests = mutableListOf<Pair<String, String>>()
-        var lastEx: IOException? = null
-        for (url in v.checksumUrls) {
-            require(url.startsWith("https://")) {
-                "CrossMirrorMd5 URL must be HTTPS (was $url) — defeats the cross-check otherwise"
-            }
-            // Validate the upstream URL is HTTPS (above), then optionally
-            // route the fetch through the dev mirror proxy. With the proxy
-            // in use the cross-mirror story collapses (both fetches go
-            // through one nginx), but it keeps the cache coherent with
-            // the proxied tarball — see [verify].
-            val effectiveUrl = mirrorProxy?.wrap(url) ?: url
-            try {
-                val body = String(downloadBytes(effectiveUrl), Charsets.US_ASCII)
-                val token = body.trim().substringBefore(' ').lowercase()
-                require(token.length == 32 && token.all { it.isDigit() || it in 'a'..'f' }) {
-                    "Malformed MD5 fetched from $url: '$token'"
-                }
-                digests += url to token
-            } catch (e: IOException) {
-                Log.w(TAG, "CrossMirrorMd5 fetch failed: $url: ${e.message}")
-                lastEx = e
-            }
-        }
-        // Offline fallback: if all mirror fetches failed (DNS or transport)
-        // AND a local sidecar `<tarball>.md5` was previously written
-        // out by a successful verify, trust that. Without this, an offline
-        // re-run of an already-verified bootstrap aborts the install.
-        if (digests.isEmpty()) {
-            val sidecar = File(tarball.parentFile, tarball.name + ".md5.verified")
-            if (sidecar.exists()) {
-                val cached = sidecar.readText().trim().lowercase()
-                require(cached.length == 32 && cached.all { it.isDigit() || it in 'a'..'f' }) {
-                    "Malformed sidecar MD5 in ${sidecar.path}: '$cached'"
-                }
-                Log.w(TAG, "Cross-mirror fetch failed; falling back to verified sidecar ${sidecar.name}")
-                digests += "sidecar://${sidecar.name}" to cached
-                digests += "sidecar://${sidecar.name}" to cached
-            } else {
-                throw lastEx ?: IOException("CrossMirrorMd5: no mirrors reachable and no sidecar")
-            }
-        }
-        Log.d(TAG, "Cross-mirror MD5 fetched: ${digests.joinToString { "${it.second.take(8)}…@${shortHost(it.first)}" }}")
-
-        val canonical = digests.first().second
-        for ((url, d) in digests.drop(1)) {
-            if (d != canonical) {
-                throw IOException(
-                    "Cross-mirror MD5 mismatch: ${digests.first().first} says $canonical, " +
-                        "$url says $d. Refusing to extract — possible mirror compromise.",
-                )
-            }
-        }
-
-        val md = MessageDigest.getInstance("MD5")
-        tarball.inputStream().use { input ->
-            val buf = ByteArray(64 * 1024)
-            while (true) {
-                if (Thread.interrupted()) throw InterruptedIOException("verify cancelled")
-                val n = input.read(buf)
-                if (n < 0) break
-                md.update(buf, 0, n)
-            }
-        }
-        val tarballHex = md.digest().joinToString("") { "%02x".format(it) }
-        if (tarballHex != canonical) {
-            throw IOException(
-                "Bootstrap MD5 mismatch for ${tarball.name}: tarball=$tarballHex, " +
-                    "${digests.size} cross-mirror agreement on $canonical. Tarball is corrupt or tampered with.",
-            )
-        }
-        // Sidecar marker for offline fallback (see verifyCrossMirrorMd5
-        // when all mirrors fail to resolve).
-        runCatching {
-            File(tarball.parentFile, tarball.name + ".md5.verified")
-                .writeText(canonical)
-        }
-        Log.i(
-            TAG,
-            "Bootstrap MD5 verified: ${tarball.name} ($canonical), agreed by " +
-                "${digests.size} HTTPS mirrors",
-        )
-    }
-
-    private fun shortHost(url: String): String =
-        try { URL(url).host } catch (_: Exception) { url }
 
     private fun downloadBytes(url: String): ByteArray {
         if (Thread.interrupted()) throw InterruptedIOException("download cancelled")
@@ -322,7 +205,7 @@ object SignatureVerifier {
      * form at `<tarball>.sig`. The signature may also be wrapped in a
      * compressed-data packet, so handle that case too.
      */
-    private fun parseDetachedSignature(bytes: ByteArray): PGPSignature {
+    internal fun parseDetachedSignature(bytes: ByteArray): PGPSignature {
         val raw: InputStream = PGPUtil.getDecoderStream(ByteArrayInputStream(bytes))
         var factory = BcPGPObjectFactory(raw)
         var obj = factory.nextObject()
@@ -336,32 +219,68 @@ object SignatureVerifier {
         return list[0]
     }
 
-    private fun loadKeyRing(context: Context, resourceName: String): PGPPublicKeyRingCollection {
-        val resId = when (resourceName) {
-            "arch_signing_key" -> R.raw.arch_signing_key
-            else -> 0
+    /**
+     * Look [signature]'s issuer up in [keys]. Split out of [verifyPgp]
+     * so the "signed by a key we don't ship" path is reachable from a
+     * unit test without a network fetch — see `ShippedPgpKeysTest`.
+     */
+    internal fun resolveSigningKey(
+        keys: PGPPublicKeyRingCollection,
+        signature: PGPSignature,
+        keyResource: String,
+    ): PGPPublicKey = keys.getPublicKey(signature.keyID)
+        ?: throw IOException(
+            "Bootstrap signature key id 0x${java.lang.Long.toHexString(signature.keyID)} " +
+                "not present in shipped keyring (resource $keyResource). " +
+                "Either the upstream rotated their signing key, or this is a forged tarball.",
+        )
+
+    /**
+     * Map a [BootstrapVerification.Pgp.keyResource] name to its
+     * `res/raw` id. Deliberately a hand-written `when` rather than
+     * `Resources.getIdentifier`: it is greppable, and an unknown name
+     * returns 0 so [loadKeyRing] fails closed instead of silently
+     * verifying against nothing. Adding a distro with a new key means
+     * adding a line here — `ShippedPgpKeysTest` fails if you forget.
+     */
+    internal fun rawKeyResourceId(resourceName: String): Int = when (resourceName) {
+        "arch_signing_key" -> R.raw.arch_signing_key
+        "archlinuxarm_signing_key" -> R.raw.archlinuxarm_signing_key
+        else -> 0
+    }
+
+    /**
+     * Parse an ASCII-armored public-key bundle. [label] only names the
+     * source in error messages. Split out of [loadKeyRing] so tests can
+     * feed it the actual bytes of a shipped `res/raw` key off disk,
+     * with no `Context` in play.
+     */
+    internal fun parseKeyRing(input: InputStream, label: String): PGPPublicKeyRingCollection =
+        ArmoredInputStream(input).use { armored ->
+            val factory = BcPGPObjectFactory(armored)
+            val rings = mutableListOf<PGPPublicKeyRing>()
+            while (true) {
+                val obj = factory.nextObject() ?: break
+                if (obj is PGPPublicKeyRing) rings.add(obj)
+            }
+            if (rings.isEmpty()) {
+                throw IOException("No public key rings in $label")
+            }
+            PGPPublicKeyRingCollection(rings)
         }
+
+    private fun loadKeyRing(context: Context, resourceName: String): PGPPublicKeyRingCollection {
+        val resId = rawKeyResourceId(resourceName)
         if (resId == 0) {
             throw IOException("Missing PGP key resource: res/raw/$resourceName")
         }
         return context.resources.openRawResource(resId).use { input ->
-            ArmoredInputStream(input).use { armored ->
-                val factory = BcPGPObjectFactory(armored)
-                val rings = mutableListOf<PGPPublicKeyRing>()
-                while (true) {
-                    val obj = factory.nextObject() ?: break
-                    if (obj is PGPPublicKeyRing) rings.add(obj)
-                }
-                if (rings.isEmpty()) {
-                    throw IOException("No public key rings in res/raw/$resourceName")
-                }
-                PGPPublicKeyRingCollection(rings)
-            }
+            parseKeyRing(input, "res/raw/$resourceName")
         }
     }
 
-    @Suppress("unused")
-    private fun PGPPublicKey.fingerprintHex(): String =
+    /** Uppercase hex fingerprint, no spaces — used by tests and logs. */
+    internal fun PGPPublicKey.fingerprintHex(): String =
         fingerprint.joinToString("") { "%02X".format(it) }
 }
 
@@ -396,18 +315,6 @@ sealed class BootstrapVerification {
     data class Pgp(
         val signatureUrl: String,
         val keyResource: String,
-    ) : BootstrapVerification()
-
-    /**
-     * Cross-mirror checksum cross-check, used when upstream publishes
-     * an MD5 sidecar but no PGP signature (ALARM). [checksumUrls] must
-     * point at independent HTTPS mirrors hosting the same `.md5`; the
-     * verifier requires byte-for-byte agreement before checking the
-     * downloaded tarball's MD5 against the consensus digest. See
-     * `SignatureVerifier.verifyCrossMirrorMd5` for the threat model.
-     */
-    data class CrossMirrorMd5(
-        val checksumUrls: List<String>,
     ) : BootstrapVerification()
 
     /**

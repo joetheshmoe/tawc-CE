@@ -68,9 +68,9 @@ internal object ProotArchiveExtractor {
         // Resolve dest once so per-entry containment checks compare
         // against a normalised absolute path. We reject any entry whose
         // resolved target escapes [dest]; this is defence-in-depth
-        // against a malicious bootstrap (the Arch x86_64 tarball is
-        // PGP-verified, but ALARM is cross-mirror MD5 only — see
-        // notes/installation.md "Bootstrap integrity").
+        // against a malicious bootstrap (both Arch tarballs are
+        // PGP-verified, but the others rest on a single-origin SHA-256
+        // — see notes/installation.md "Bootstrap integrity").
         val destReal = dest.canonicalFile
         val destPrefix = destReal.absolutePath + File.separator
 

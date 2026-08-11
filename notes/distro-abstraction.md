@@ -41,7 +41,7 @@ me.phie.tawc.install/
   InstallActions.kt               # broker `install`/`uninstall` action handlers (debug)
   Installer.kt                    # generic pipeline (replaces ArchInstaller);
                                   #   calls Distro.resolveBootstrap() before download
-  SignatureVerifier.kt            # PGP / CrossMirrorMd5 / Sha256 (Manjaro)
+  SignatureVerifier.kt            # PGP (both Arch) / Sha256 (the rest)
   Su, Downloader, BootstrapCache, Archive, RootfsCleaner,
     ChrootMounter, ChrootRunner   # unchanged distro-agnostic primitives
   util/
@@ -116,7 +116,7 @@ release via the GitHub Releases REST API (`api.github.com/repos/.../releases/lat
 and read the asset's server-computed `digest` field — that hex digest
 becomes the `BootstrapVerification.Sha256` argument passed back into
 the installer. The Arch impls don't override; they keep their static
-PGP / cross-mirror-MD5 verification.
+PGP verification.
 
 ## `DistroRegistry`
 

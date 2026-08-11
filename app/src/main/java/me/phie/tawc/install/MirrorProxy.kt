@@ -13,14 +13,14 @@ import java.net.URL
  * follows `proxy_pass` upstream but the cache key strips it (one cache
  * entry per path, regardless of signed-redirect tokens).
  *
- * Verification URLs (PGP `.sig`, ALARM `.md5` sidecars, GitHub
- * Releases REST API, Void's `sha256sum.txt`) **also** flow through this
- * in dev builds. That collapses the cross-mirror integrity story
- * (both checksum endpoints sharing one nginx instead of being
- * independently operated), but the alternative — tarball cached,
- * digests fetched fresh — produces a permanent verification mismatch
- * the moment upstream rotates the artifact, with no in-band recovery.
- * Release builds never construct a [MirrorProxy].
+ * Verification URLs (PGP `.sig`, GitHub Releases REST API, Void's
+ * `sha256sum.txt`) **also** flow through this in dev builds. The
+ * alternative — tarball cached, digests fetched fresh — produces a
+ * permanent verification mismatch the moment upstream rotates the
+ * artifact, with no in-band recovery. Proxying a `.sig` is safe (it is
+ * still checked against a key in the APK, so tampering fails closed);
+ * proxying a bare digest is only as good as the proxy, which is why
+ * release builds never construct a [MirrorProxy].
  *
  * Construction is intentionally light — pass the bare base URL the
  * user supplied via `--es mirrorProxy` and we'll cope with a missing

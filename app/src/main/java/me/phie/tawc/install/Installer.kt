@@ -27,11 +27,11 @@ import java.io.InterruptedIOException
  *   3. VERIFYING            — [SignatureVerifier.verify] checks the
  *                             tarball against the distro's
  *                             [BootstrapVerification] policy (PGP
- *                             detached signature for Arch x86_64,
- *                             cross-mirror MD5 for ALARM, resolved
- *                             SHA-256 digest for Manjaro/Void/
- *                             Debian). On mismatch the install fails
- *                             before any byte hits the rootfs.
+ *                             detached signature for both Arch
+ *                             flavours, resolved SHA-256 digest for
+ *                             Manjaro/Void/Debian). On mismatch the
+ *                             install fails before any byte hits the
+ *                             rootfs.
  *   4. EXTRACTING           — [InstallationMethod.extractBootstrap]
  *                             (chroot → toybox tar via su; proot →
  *                             pure-Kotlin [ProotArchiveExtractor]),
@@ -168,7 +168,7 @@ class Installer(
         // bad download (or a stale entry served by some upstream cache)
         // sticks forever. On the second failure we surface a hint
         // pointing at the dev cache proxy, since that's the most common
-        // source of "tarball drifted out of sync with the live .md5".
+        // source of "tarball drifted out of sync with the live .sig".
         var attempt = 0
         var verified: File? = null
         while (verified == null) {

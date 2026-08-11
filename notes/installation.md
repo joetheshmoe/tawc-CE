@@ -220,9 +220,9 @@ The package is split into three layers:
 | `InstallationStore.kt`         | Filesystem layout + JSON metadata I/O. `setState` is the one entry point that writes the state field. |
 | `Su.kt`                        | Wrapper around Magisk `su`. Pipes the script via stdin (no shell-quoting headaches), streams combined stdout/stderr line-by-line via a callback. |
 | `Downloader.kt`                | HTTP downloader for bootstrap tarballs. Caches by content length. |
-| `SignatureVerifier.kt`         | Sealed `BootstrapVerification` (`ResolvedAtInstallTime` / `Pgp` / `CrossMirrorMd5` / `Sha256`) and `verify(...)`. Called from [Installer] between download and extract — see *Bootstrap integrity* below. Uses BouncyCastle (`bcpg-jdk18on` + `bcprov-jdk18on`) for the OpenPGP layer. Treat as load-bearing security code. |
+| `SignatureVerifier.kt`         | Sealed `BootstrapVerification` (`ResolvedAtInstallTime` / `Pgp` / `Sha256`) and `verify(...)`. Called from [Installer] between download and extract — see *Bootstrap integrity* below. Uses BouncyCastle (`bcpg-jdk18on` + `bcprov-jdk18on`) for the OpenPGP layer. Treat as load-bearing security code. |
 | `Minisign.kt`                  | Minisign/signify (Ed25519, plain `Ed` and BLAKE2b-512-prehashed `ED`) detached-signature parsing + verification, on BouncyCastle's low-level `Ed25519Signer` / `Blake2bDigest`. Used by [VoidSha256Resolver] to authenticate Void's `sha256sum.txt` before any digest is read out of it. Also load-bearing security code. |
-| `BootstrapCache.kt`            | Sole owner of `<cacheDir>/install/`. `download(arch, url, format, …)` is the single entry point: it mkdirs, fetches via [Downloader], and refreshes the file's mtime so the TTL counts from "last used" rather than "first downloaded". Also exposes `tempFifoFor(arch)` for [Archive]'s zstd→tar streaming FIFO so the transient lives in the cache dir under one owner. `sweepStale` runs a two-pass janitor: TTL eviction (7 days) for canonical `bootstrap-<cacheKey>.tar.{zst,gz}`; unconditional deletion of `*.fifo`, legacy `*.tmp`, and `*.part` (transients are never valid across processes). Also defines the `BootstrapFormat` enum. |
+| `BootstrapCache.kt`            | Sole owner of `<cacheDir>/install/`. `download(arch, url, format, …)` is the single entry point: it mkdirs, fetches via [Downloader], and refreshes the file's mtime so the TTL counts from "last used" rather than "first downloaded". Also exposes `tempFifoFor(arch)` for [Archive]'s zstd→tar streaming FIFO so the transient lives in the cache dir under one owner. `sweepStale` runs a two-pass janitor: TTL eviction (7 days) for canonical `bootstrap-<cacheKey>.tar.{zst,gz}`; unconditional deletion of `*.fifo`, legacy `*.tmp`, `*.part` (transients are never valid across processes), and the legacy `*.md5.verified` sidecar left by pre-PGP ALARM installs. Also defines the `BootstrapFormat` enum. |
 | `Archive.kt`                   | Tar extraction. Plain `.tar` / `.tar.gz` get handed to `toybox tar` directly; `.tar.zst` is streamed in-process through a named pipe (`bootstrap-<cacheKey>.tar.fifo`) so the ~700 MB plaintext never lands on disk. Never wipes — install only runs against an empty slot. |
 | `RootfsCleaner.kt`             | The one and only delete path, for every install method: kill guest processes → unmount (chroot only) → refuse if any mount remains under the install dir → two-pass `find -xdev -depth -delete` (su-first for chroot, app-uid with one su retry otherwise). The chroot-only facts come from the metadata-recorded method key, not a live `InstallationMethod`, so disabled-method slots still wipe correctly. Used by uninstall; never by install. `RootfsCleanerTripwireTest` fails on recursive deletes elsewhere in the app sources. |
 | `RootfsTmpSweeper.kt`          | Age-based sweep (3 days, lstat mtimes, never follows symlinks, skips `/tmp/.X11-unix`) of every install's `<rootfs>/tmp`, run from `TawcApplication`'s startup thread — see *Rootfs /tmp sweep* below. |
@@ -730,11 +730,15 @@ Hard rules:
   it ever reaches `SignatureVerifier.verify` (an override dropped or
   forgotten), the install throws instead of proceeding unverified.
   Before adding a new distro, find an upstream signature
-  (`<tarball>.sig` is the convention), a cross-mirror checksum
-  cross-check, or at minimum a server-side digest to resolve at
-  install time. A distro that genuinely cannot be verified would
-  need a new, loudly-named variant added back — treat that as a
-  security review, not a convenience.
+  (`<tarball>.sig` is the convention), or at minimum a server-side
+  digest to resolve at install time. A distro that genuinely cannot
+  be verified would need a new, loudly-named variant added back —
+  treat that as a security review, not a convenience.
+- **No MD5 in the install path.** Both Arch bootstraps verify against
+  a PGP key shipped in the APK; everything else is SHA-256. ALARM was
+  the last MD5 holdout and moved to PGP in 2026-08 (see *ALARM
+  bootstrap: from cross-mirror MD5 to PGP* below). Do not reintroduce
+  a checksum-only or MD5 tier — the sealed class no longer has one.
 - **`SigLevel = Never` is gone from `pacman.conf` and stays gone.**
   Pacman runs with the upstream default
   (`Required DatabaseOptional`); `pacman-key --populate <keyring>`
@@ -756,7 +760,7 @@ Hard rules:
 | Bootstrap | Verification | Where |
 | --- | --- | --- |
 | Arch x86_64 (`geo.mirror.pkgbuild.com`, HTTPS) | PGP detached signature `<tarball>.sig`, against Pierre Schmitz's Arch developer key (`3E80 CA1A 8B89 F69C BA57 D98A 76A5 EF90 5444 9A5C`) shipped at `res/raw/arch_signing_key.asc` | `BootstrapVerification.Pgp` in `ArchLinuxX86_64.kt` |
-| ALARM aarch64 (`fl.us.mirror.archlinuxarm.org`, HTTPS) | Cross-mirror MD5 cross-check: `.md5` fetched over HTTPS from `fl.us.` and `ca.us.` (independently-operated mirrors with their own valid certs), digests must agree byte-for-byte, then the tarball's MD5 must match | `BootstrapVerification.CrossMirrorMd5` in `ArchLinuxArm.kt` |
+| ALARM aarch64 (`fl.us.mirror.archlinuxarm.org`, HTTPS) | PGP detached signature `<tarball>.sig`, against the Arch Linux ARM Build System key (`68B3 537F 39A3 13B3 E574 D067 7719 3F15 2BDB E6A6`) shipped at `res/raw/archlinuxarm_signing_key.asc` — the same key `pacman-key --populate archlinuxarm` pins for packages | `BootstrapVerification.Pgp` in `ArchLinuxArm.kt` |
 | Manjaro ARM aarch64 (`github.com/manjaro-arm/rootfs/releases`, HTTPS) | SHA-256 from the GitHub Releases REST API: `api.github.com/repos/manjaro-arm/rootfs/releases/latest` returns the asset's server-computed `digest: sha256:<hex>`. We fetch that JSON over HTTPS in `ManjaroArm.resolveBootstrap`, then verify the downloaded tarball's SHA-256 matches before extract | `BootstrapVerification.Sha256` (Manjaro path) in `ManjaroArm.kt` |
 | Void Linux x86_64 / aarch64 glibc (`repo-default.voidlinux.org/live/current/`, HTTPS) | SHA-256 from upstream `sha256sum.txt`, **and** the minisign (Ed25519) signature `sha256sum.sig` over that manifest, checked against the per-image-date Void release key — bundled in `VoidReleaseKeys` from void-packages on GitHub, i.e. a second origin. `VoidSha256Resolver.resolveLatest` verifies the signature before trusting any digest from the manifest, then the tarball's SHA-256 is checked before extract | `Minisign.kt` + `VoidSha256Resolver.kt`, yielding `BootstrapVerification.Sha256` in `VoidLinux{X86_64,Aarch64}.kt` |
 | Debian sid x86_64 / aarch64 (`raw.githubusercontent.com/debuerreotype/docker-debian-artifacts`, HTTPS) | SHA-256 from the official debuerreotype Docker artifact OCI manifest. We resolve the `dist-amd64` / `dist-arm64v8` branch tip to a commit SHA via the GitHub API, fetch `image-manifest.json` at that pinned commit, read the single gzip layer digest, then verify `rootfs.tar.gz` (fetched from the same commit) against it before extract. Commit-pinning closes the mutable-branch race; the trust profile is still a single HTTPS origin (digest and tarball from the same repo) plus OCI digest sanity check | `BootstrapVerification.Sha256` (Debian path) in `DebianSid.kt` / `DebianDockerResolver.kt` |
@@ -764,9 +768,8 @@ Hard rules:
 
 ### Same-origin SHA-256 bootstraps (Manjaro / Debian): trust profile
 
-Manjaro ARM is intermediate between the strong Arch x86_64 PGP path
-and the weaker ALARM cross-mirror MD5. Upstream doesn't sign with
-PGP either, but their tarball is hosted on GitHub Releases and the
+Manjaro ARM sits below both Arch PGP paths. Upstream doesn't sign the
+tarball at all, but it is hosted on GitHub Releases and the
 GitHub API exposes a server-side SHA-256 of every release artifact in
 the asset's `digest` field. We fetch that JSON over HTTPS to
 `api.github.com` and use the digest to verify the tarball before
@@ -787,10 +790,12 @@ What it does **not** catch:
   our check would still pass. Same threat as any HTTPS-distributed
   artifact without a separate offline-key signature chain.
 
-Weaker than `Pgp`, comparable in spirit to the ALARM cross-mirror
-MD5 (both rely on a single HTTPS endpoint's trust). When upstream
-Manjaro starts shipping a detached PGP signature we should switch
-over.
+Weaker than `Pgp`: this rests on a single HTTPS endpoint's trust,
+whereas a `.sig` is bound to a key in the APK and survives a
+compromised origin. When upstream Manjaro starts shipping a detached
+PGP signature we should switch over — ALARM did exactly that in
+2026-08, so it's worth re-checking periodically rather than assuming
+upstream never will.
 
 The same analysis applies to Debian sid, with one aggravating detail:
 its digest and tarball both come from the debuerreotype GitHub repo,
@@ -826,7 +831,8 @@ Mechanics (`Minisign.kt`, `VoidSha256Resolver.kt`, `VoidReleaseKeys.kt`):
   `srcpkgs/void-release-keys/files/void-release-<date>.pub` in
   void-linux/void-packages on **GitHub**. That's the point — the key
   origin is independent of voidlinux.org, so forging a bootstrap now
-  requires compromising both, roughly the ALARM cross-mirror tier.
+  requires compromising both — weaker than the Arch/ALARM PGP tier,
+  where the key ships in the APK, but well above a single origin.
 - All keys known at build time are bundled verbatim in
   `VoidReleaseKeys`, so the common case needs no extra fetch and no
   runtime trust in GitHub at all. If `live/current/` moves to an image
@@ -862,44 +868,56 @@ and exercised by `MinisignTest`, which also verifies every bundled key
 parses — a typo in `VoidReleaseKeys` fails the unit tests rather than
 an install.
 
-### Known weaker spot: ALARM bootstrap
+### ALARM bootstrap: from cross-mirror MD5 to PGP
 
-ALARM is the weaker of the two bootstrap paths because upstream
-publishes only an MD5 sidecar, not a PGP signature. The cross-mirror
-HTTPS check is much better than the previous plaintext-HTTP-no-check
-setup but it's not as strong as the Arch x86_64 PGP path.
+Until 2026-08 ALARM was the weak bootstrap: upstream published only an
+`.md5` sidecar, so the trust root was mirror infrastructure (two
+independently-operated HTTPS mirrors had to agree on the digest) rather
+than a key we ship. That was also the last MD5 anywhere in the install
+path.
 
-What cross-mirror MD5 over HTTPS catches:
+Upstream now publishes a detached OpenPGP signature next to the
+tarball. Verified 2026-08-10: `<tarball>.sig` is a binary detached
+signature, RSA/SHA-512, issuer fingerprint
+`68B3537F39A313B3E574D06777193F152BDBE6A6` — the
+`Arch Linux ARM Build System <builder@archlinuxarm.org>` key
+(rsa4096, created 2014-01-18, no expiry). Its signature timestamp
+tracks the tarball's `Last-Modified`, so it is re-signed per rebuild
+rather than being a stale one-off, and `ca.us` / `de3` serve it too, so
+it comes from the publish pipeline and not one mirror's local addition.
 
-- Passive WiFi / coffee-shop / ISP MITM (TLS handles this).
-- A single mirror or CDN POP being compromised in isolation.
-- Random transmission corruption.
+The key was taken from two independent origins and both yielded that
+fingerprint, byte-identical after a minimal export:
 
-What it does **not** catch:
+1. `keyserver.ubuntu.com`.
+2. Upstream's own `archlinuxarm-keyring` package
+   (`usr/share/pacman/keyrings/archlinuxarm.gpg`), whose
+   `archlinuxarm-trusted` pins exactly that fingerprint and whose
+   revocation list is empty.
 
-- Both `fl.us.mirror.archlinuxarm.org` AND
-  `ca.us.mirror.archlinuxarm.org` being compromised concurrently (same
-  upstream operator, plausible for a nation-state attacker against
-  the underlying CDN/hosting).
-- Let's Encrypt mis-issuing certs for both subdomains.
-- An MD5 second-preimage attack on a tarball binary (still expensive
-  in 2026, but it's MD5 — not where you want your floor).
+It ships armored at `res/raw/archlinuxarm_signing_key.asc`. This is the
+same key `pacman-key --populate archlinuxarm` trusts for packages once
+the rootfs is up, so bootstrap and package trust now share one root.
 
-PGP would defeat all three: the signature is bound to a key whose
-fingerprint we ship with the app, independent of mirror infra entirely.
+Two consequences worth knowing:
 
-**The plan is not to bolt PGP onto ALARM** — upstream doesn't sign
-the tarball and isn't likely to start. New installs can use Debian
-Sid, whose debuerreotype rootfs is verified against the OCI layer
-SHA-256 before extraction and whose packages are then verified by apt
-against the Debian archive keyring. ALARM remains available, so the
-cross-mirror MD5 over HTTPS is still its floor and must not be
-weakened.
+- If ALARM rotates the build-system key, installs fail with "not
+  present in shipped keyring" until a new APK ships. That is the
+  intended failure mode and matches Arch x86_64 — do **not** soften it
+  with a runtime key fetch, which hands the trust decision back to the
+  network.
+- The old `<tarball>.md5.verified` sidecar is gone, and with it the
+  offline fallback that let a cached-but-unreachable-mirror ALARM
+  install proceed on a previously verified digest. Verifying now always
+  needs the 566-byte `.sig` fetch, so a fully offline re-install fails
+  at the verify stage. Arch x86_64 has always behaved this way. Stale
+  sidecars left by older installs are swept by
+  `BootstrapCache.sweepStale` (its transient-name regex matches them).
 
 ### Verifier code
 
 - `SignatureVerifier.kt` — sealed `BootstrapVerification`
-  (`ResolvedAtInstallTime`, `Pgp`, `CrossMirrorMd5`, `Sha256`) and
+  (`ResolvedAtInstallTime`, `Pgp`, `Sha256`) and
   `verify(context, tarball, verification)`.
   Called from `Installer.install` between [BootstrapCache.download]
   and [Archive.extractAsRoot]. Throws `IOException` on any failure
@@ -909,6 +927,13 @@ weakened.
   layer; the duplicate `META-INF/versions/9/OSGI-INF/MANIFEST.MF`
   across the three jars is resolved with a `pickFirsts` rule in
   `app/build.gradle.kts`.
+- `ShippedPgpKeysTest` parses the actual `res/raw` key files off disk
+  and asserts their fingerprints, that every `Pgp.keyResource` a distro
+  declares is registered in `SignatureVerifier.rawKeyResourceId` and
+  present as a file, and that a signature whose issuer is absent from
+  the declared ring throws. A key swapped, truncated, or shipped
+  without its `when` entry fails the unit tests rather than a user's
+  install.
 
 ## Slimming policy
 

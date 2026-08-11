@@ -63,20 +63,16 @@ class BootstrapCache(private val dir: File) {
     }
 
     /**
-     * Drop the cached tarball + verified-md5 sidecar for [arch] /
-     * [format]. Called by [me.phie.tawc.install.Installer] after a
-     * verification failure: the local file is by definition not what
-     * we want, and a stale `.md5.verified` sidecar would lie to a
-     * future offline-fallback verify.
+     * Drop the cached tarball for [arch] / [format]. Called by
+     * [me.phie.tawc.install.Installer] after a verification failure:
+     * the local file is by definition not what we want, and the
+     * bootstrap URLs are mutable `latest` paths, so a re-download may
+     * well pick up the rebuild the live signature actually covers.
      */
     fun evict(arch: String, format: BootstrapFormat) {
         val tarball = pathFor(arch, format)
         if (tarball.exists() && tarball.delete()) {
             Log.d(TAG, "Evicted bootstrap cache: ${tarball.name}")
-        }
-        val sidecar = File(tarball.parentFile, tarball.name + ".md5.verified")
-        if (sidecar.exists() && sidecar.delete()) {
-            Log.d(TAG, "Evicted bootstrap sidecar: ${sidecar.name}")
         }
     }
 
@@ -103,7 +99,8 @@ class BootstrapCache(private val dir: File) {
      *    mtime, since these are never valid across processes — they
      *    only exist inside one install-time call's `try/finally`.
      *    Anything found at app start is by definition stranded by a
-     *    crash.
+     *    crash. `.md5.verified` joins them: nothing reads it since
+     *    ALARM moved to PGP, but older installs left one behind.
      *
      * Returns the number of files deleted, for logging.
      */
@@ -168,12 +165,18 @@ class BootstrapCache(private val dir: File) {
 
         /**
          * `bootstrap-<arch>.tar.fifo` (Archive's FIFO; `.tmp` is the
-         * historical zstd-decompression target from older builds) or
-         * `bootstrap-<arch>.tar.{zst,gz,xz}.part` (Downloader's in-flight
-         * suffix). Always evicted on app start.
+         * historical zstd-decompression target from older builds),
+         * `bootstrap-<arch>.tar.{zst,gz,xz}.part` (Downloader's
+         * in-flight suffix), or `.md5.verified` (the ALARM cross-mirror
+         * sidecar, dead since that distro moved to PGP — matched here so
+         * upgraded installs drop the leftover). Always evicted on app
+         * start.
          */
         private val TRANSIENT_NAME_RE =
-            Regex("""^bootstrap-[A-Za-z0-9_-]+\.tar\.(fifo|tmp|(zst|gz|xz)\.part)$""")
+            Regex(
+                """^bootstrap-[A-Za-z0-9_-]+\.tar\.""" +
+                    """(fifo|tmp|(zst|gz|xz)\.(part|md5\.verified))$""",
+            )
     }
 }
 

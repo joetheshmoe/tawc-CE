@@ -32,13 +32,12 @@ left out for now since x86_64 is the emulator-only path and Arch
 Linux x86_64 already covers regression testing of the install
 abstraction.
 
-A specific reason ALARM should eventually be replaced: **its
-bootstrap tarball is unsigned upstream**, so we can only verify it
-via cross-mirror MD5 over HTTPS (see
-[installation.md](installation.md) → *Known weaker spot: ALARM
-bootstrap*). Switching to a distro with a real signature chain
-(Debian's archive keyring, etc.) is a strict integrity upgrade on
-top of the maintenance/freshness wins listed below.
+The old integrity argument for replacing ALARM is gone: upstream now
+publishes a detached PGP signature for the bootstrap tarball, and we
+verify it against the build-system key shipped in the APK (see
+[installation.md](installation.md) → *ALARM bootstrap: from
+cross-mirror MD5 to PGP*). The remaining reasons to consider a
+different distro are maintenance and freshness, listed below.
 
 ## The hard constraint: glibc
 

@@ -12,17 +12,15 @@ import me.phie.tawc.install.distro.DistroBootstrap
  * Arch Linux ARM (ALARM) for aarch64. The bootstrap tarball is gzip
  * (no zstd transient needed) and unwrapped (no `stripPrefix`).
  *
- * Integrity story: ALARM doesn't sign the bootstrap (only an `.md5`
- * sidecar), so we can't do PGP. Instead we fetch the tarball over
- * HTTPS from a regional mirror with a valid TLS cert, then
- * cross-check the `.md5` against a second independent HTTPS mirror —
- * any single compromise (server, CDN, Let's Encrypt issuance for one
- * subdomain) needs to coincide with the same forgery on the other
- * subdomain to lie. This is weaker than PGP but materially better
- * than the previous plaintext-HTTP-no-check setup.
- *
- * Upgrade to PGP when ALARM upstream starts signing — see
- * notes/installation.md "Known weaker spot: ALARM bootstrap".
+ * Integrity story: upstream publishes a detached OpenPGP signature at
+ * `<tarball>.sig`, signed by the ALARM build system key
+ * (`68B3537F39A313B3E574D06777193F152BDBE6A6`, rsa4096) — the same key
+ * `pacman-key --populate archlinuxarm` trusts for packages once the
+ * rootfs is up. We ship it at `res/raw/archlinuxarm_signing_key.asc`,
+ * so the bootstrap's trust root is a key in the APK rather than mirror
+ * infrastructure. Key rotation upstream breaks installs until we ship
+ * a new APK; that is the intended failure mode (see
+ * notes/installation.md "Bootstrap integrity").
  */
 internal object ArchLinuxArm : Distro {
     override val key: String = Installation.DISTRO_ARCH
@@ -32,25 +30,27 @@ internal object ArchLinuxArm : Distro {
     override val androidAbi: String = "arm64-v8a"
 
     private const val PRIMARY_MIRROR = "fl.us.mirror.archlinuxarm.org"
-    private const val SECONDARY_MIRROR = "ca.us.mirror.archlinuxarm.org"
+
+    // Fetch goes over HTTPS to fl.us — the geo-redirector at
+    // os.archlinuxarm.org would 301 to plain HTTP, and most regional
+    // mirrors only have a cert for archlinuxarm.org and fail TLS
+    // hostname validation. fl.us serves a proper cert covering its own
+    // hostname. TLS is belt-and-braces here: the PGP signature below is
+    // what actually decides whether the bytes are trusted.
+    private const val BOOTSTRAP_URL =
+        "https://$PRIMARY_MIRROR/os/ArchLinuxARM-aarch64-latest.tar.gz"
 
     override val bootstrap: DistroBootstrap = DistroBootstrap(
-        // Primary fetch goes over HTTPS to fl.us — the geo-redirector
-        // at os.archlinuxarm.org would 301 to plain HTTP, and most
-        // regional mirrors only have a cert for archlinuxarm.org and
-        // fail TLS hostname validation. fl.us and ca.us both serve a
-        // proper cert covering their own hostname.
-        url = "https://$PRIMARY_MIRROR/os/ArchLinuxARM-aarch64-latest.tar.gz",
+        url = BOOTSTRAP_URL,
         format = BootstrapFormat.GZIP,
         stripPrefix = null,
-        // Cross-mirror MD5: each .md5 is fetched over its own HTTPS
-        // session against an independently-operated mirror, then we
-        // require byte-for-byte agreement before trusting either.
-        verification = BootstrapVerification.CrossMirrorMd5(
-            checksumUrls = listOf(
-                "https://$PRIMARY_MIRROR/os/ArchLinuxARM-aarch64-latest.tar.gz.md5",
-                "https://$SECONDARY_MIRROR/os/ArchLinuxARM-aarch64-latest.tar.gz.md5",
-            ),
+        // Detached PGP signature by the Arch Linux ARM Build System key
+        // (68B3 537F 39A3 13B3 E574  D067 7719 3F15 2BDB E6A6), the
+        // same key archlinuxarm-keyring pins as trusted. Public key
+        // shipped at res/raw/archlinuxarm_signing_key.asc.
+        verification = BootstrapVerification.Pgp(
+            signatureUrl = "$BOOTSTRAP_URL.sig",
+            keyResource = "archlinuxarm_signing_key",
         ),
     )
 

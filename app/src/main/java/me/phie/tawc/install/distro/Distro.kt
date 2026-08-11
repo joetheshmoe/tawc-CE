@@ -111,7 +111,7 @@ interface Distro {
      *   implementation writes into the rootfs (pacman mirrorlist,
      *   xbps repository conf, apt sources.list) must be rewritten
      *   through it via [MirrorProxy.wrap]. Verification endpoints
-     *   (`.sig`, `.md5` sidecars) are **not** proxied — see
+     *   (`.sig` and friends) are **not** proxied here — see
      *   `notes/cache-proxy.md`.
      */
     fun configure(
