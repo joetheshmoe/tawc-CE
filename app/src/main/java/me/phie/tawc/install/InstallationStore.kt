@@ -21,6 +21,15 @@ class InstallationStore(context: Context) {
 
     fun installationDir(id: String): File = File(baseDir, id)
     fun rootfsDir(id: String): File = File(installationDir(id), "rootfs")
+
+    /**
+     * Scratch workspace for the packages bootstrap flavor (busybox +
+     * local mirror + debootstrap copy), sibling of `rootfs/`. Exists
+     * only during a packages-flavor install; deleted on success by
+     * [me.phie.tawc.install.pkgbootstrap.PackageBootstrapInstaller]
+     * and on uninstall by [RootfsCleaner].
+     */
+    fun bootstrapWorkDir(id: String): File = File(installationDir(id), "bootstrap-work")
     fun metadataFile(id: String): File = File(installationDir(id), "metadata.json")
 
     /**

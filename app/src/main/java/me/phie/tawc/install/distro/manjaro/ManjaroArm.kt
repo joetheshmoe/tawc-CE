@@ -5,8 +5,10 @@ import me.phie.tawc.install.BootstrapVerification
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
+import me.phie.tawc.install.distro.BootstrapFlavor
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroBootstrap
+import me.phie.tawc.install.distro.TarballBootstrap
 import me.phie.tawc.install.distro.arch.ArchPacmanCommon
 
 /**
@@ -41,14 +43,19 @@ internal object ManjaroArm : Distro {
      * by code paths that may want a hint without paying the API
      * round-trip, e.g. a future "show download size" UI).
      */
-    override val bootstrap: DistroBootstrap = DistroBootstrap(
+    override val bootstrap: TarballBootstrap = TarballBootstrap(
         url = "https://github.com/manjaro-arm/rootfs/releases/latest/download/Manjaro-ARM-aarch64-latest.tar.gz",
         format = BootstrapFormat.GZIP,
         stripPrefix = null,
         verification = BootstrapVerification.ResolvedAtInstallTime,
     )
 
-    override fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy?): DistroBootstrap {
+    override fun resolveBootstrap(
+        log: (String) -> Unit,
+        mirrorProxy: MirrorProxy?,
+        flavor: BootstrapFlavor,
+    ): DistroBootstrap {
+        require(flavor == BootstrapFlavor.TARBALL) { "manjaro has only the tarball flavor" }
         log("manjaro-arm: resolving latest release via GitHub API")
         val asset = GitHubReleaseResolver.resolveLatest(
             owner = "manjaro-arm",
@@ -57,7 +64,7 @@ internal object ManjaroArm : Distro {
             mirrorProxy = mirrorProxy,
         )
         log("manjaro-arm: latest=${asset.downloadUrl} sha256=${asset.sha256Hex}")
-        return DistroBootstrap(
+        return TarballBootstrap(
             url = asset.downloadUrl,
             format = BootstrapFormat.GZIP,
             stripPrefix = null,

@@ -9,7 +9,6 @@ design, build, and operational notes in [`../notes/`](../notes/).
 - [clipboard-paste-focus-gate.md](clipboard-paste-focus-gate.md) - only serve the Android clipboard to the focused client; today any X11 client on the shared Xwayland can read it.
 - [gfxstream-bridge-remaining-work.md](gfxstream-bridge-remaining-work.md) - remaining GL/GLES and x86_64 AVD work for the gfxstream bridge backend.
 - [gl-on-gles-translator.md](gl-on-gles-translator.md) - possible in-house GL 3.3-core-on-ES 3.2 translator (glslang/SPIRV-Cross shader pipeline) for the modern-GL gap zink can't cover on Vulkan 1.1 devices.
-- [package-bootstrap.md](package-bootstrap.md) - per-distro tarball-vs-packages bootstrap flavors, with Debian sid assembled on-device by vendored debootstrap from the signed `InRelease` chain.
 - [tawcroot-landlock.md](tawcroot-landlock.md) - kernel-enforced path containment for tawcroot via Landlock (probe-and-enable, kernel 5.13+).
 - [ubuntu-distro.md](ubuntu-distro.md) - add Ubuntu 24.04 as a distro from the signed ubuntu-base tarball (cdimage PGP over SHA256SUMS), both ABIs.
 - [x86-box64.md](x86-box64.md) - per-program x86_64 emulation in existing arm64 distros via box64 (native-library wrapping; 16K-page hedge).

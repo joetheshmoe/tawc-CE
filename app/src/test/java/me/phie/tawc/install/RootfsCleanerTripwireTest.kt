@@ -42,6 +42,12 @@ class RootfsCleanerTripwireTest {
         // In-rootfs package-cache/cruft cleanup scripts that run
         // inside the guest during install configure.
         "install/distro/apt/AptCommon.kt" to "in-rootfs apt cleanup",
+        // Packages-flavor bootstrap workspace lifecycle (bootstrap-work/
+        // scratch + per-attempt mirror rebuild) during an install the
+        // gate has already confined to a fresh slot — never touches a
+        // READY rootfs; slot deletion still goes through RootfsCleaner,
+        // which also reaps a leftover workspace on uninstall.
+        "install/pkgbootstrap/PackageBootstrapInstaller.kt" to "bootstrap workspace scratch",
         "install/distro/arch/ArchPacmanCommon.kt" to "in-rootfs pacman cleanup",
         "install/distro/voidlinux/VoidCommon.kt" to "in-rootfs xbps cleanup",
     )

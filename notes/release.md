@@ -13,6 +13,13 @@ Releases are signed APKs published as GitHub release assets. No app-store distri
 When asked to prep a release:
 
 1. Bump `versionName` in `app/build.gradle.kts` to the next integer.
+   Also check the shipped archive keyrings: none of the keys in
+   `app/src/main/res/raw/debian_archive_keyring.asc` may be nearing
+   expiry (currently 12/bookworm expires 2031, 13/trixie 2035), and if
+   Debian has published a new suite key (14/forky…), add it — obtain
+   from two independent origins and diff, per notes/installation.md
+   "Bootstrap integrity". `ShippedPgpKeysTest` pins the expected
+   fingerprints.
 2. Draft release notes from `git log <last-tag>..` (first release: summarize the feature set instead). Keep them user-facing: features, fixes, known limitations.
 3. Commit as `release: vN`, then tag `vN` (the prep request counts as the explicit ask to commit/tag; do not push).
 4. Hand off: print the human steps below with the concrete version filled in, plus the drafted notes (e.g. as a `--notes-file` in scratch or inline for copy/paste).

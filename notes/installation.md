@@ -276,7 +276,12 @@ inflates Material widgets.
 The state machine guarantees `ArchInstaller.install()` only ever runs
 against a `(no dir)` slot — no wipe, no overlay, no resume. Stages
 reported as `InstallProgress` to the UI and per-line logged to logcat
-(`tawc-install`):
+(`tawc-install`).
+
+The pipeline below describes the **tarball** bootstrap flavor (every
+distro's supported flavor today). Stages 2-4 are flavor-specific; see
+*Bootstrap flavors* below for the `packages` alternative, which
+replaces them and rejoins at stage 5.
 
 1. **(state write)** — `setState(INSTALLING)` runs first; from here on
    the entry exists on disk and any failure parks it in `FAILED`.
@@ -745,6 +750,15 @@ scripts/tawc-exec.sh --foreground-app --action install \
     --arg distro=archlinuxarm \
     --arg mirrorProxy=http://127.0.0.1:8080/proxy/
 
+# Debian sid via the (debug-only) packages bootstrap flavor — real
+# debootstrap on-device against the signed archive; see "Bootstrap
+# flavors":
+scripts/tawc-exec.sh --foreground-app --action install \
+    --arg id=sidpkg \
+    --arg distro=debian-sid \
+    --arg bootstrap=packages \
+    --arg mirrorProxy=http://127.0.0.1:8080/proxy/
+
 # Tear down. Same channel; the uninstall is also the only way to
 # clear a `FAILED` install before trying again.
 scripts/tawc-exec.sh --foreground-app --action uninstall \
@@ -797,6 +811,100 @@ them. To do it by hand:
     adb shell "su -c 'magisk --sqlite \"INSERT OR REPLACE INTO policies (uid,policy,until,logging,notification) VALUES($uid,2,0,1,0);\"'"
     adb shell pm grant me.phie.tawc android.permission.POST_NOTIFICATIONS
 
+## Bootstrap flavors
+
+A distro can implement more than one way to assemble its rootfs — a
+**bootstrap flavor**. `DistroBootstrap` is a sealed interface:
+
+- `TarballBootstrap` — today's path for every distro: download one
+  archive, verify ([Bootstrap integrity](#bootstrap-integrity-load-bearing--do-not-weaken)),
+  extract.
+- `PackageBootstrap` — assemble from signed repo metadata + individual
+  packages. Implemented for Debian sid only, via **real debootstrap
+  run on-device** (`me.phie.tawc.install.pkgbootstrap.
+  PackageBootstrapInstaller`). Its value is trust + freshness (the
+  chain roots in an APK-shipped keyring and `Valid-Until` gives replay
+  protection no tarball has); it is *slower* than the tarball.
+
+`Distro.bootstrapFlavors` maps `BootstrapFlavor` (`TARBALL`,
+`PACKAGES`) to descriptors; `Distro.supportedFlavor` names the one
+release-supported flavor (tarball everywhere — the packages flavor is
+debug-only until it earns promotion). Selection: broker
+`--arg bootstrap=packages`, or the dev-only radio row on the install
+form. `InstallationService` rejects non-supported flavors in release
+builds (the mirrorProxy gate pattern) and rejects
+`packages`×non-tawcroot method combinations (the flavor runs its
+resolve/extract stages as a guest of the tawcroot method machinery).
+The installed flavor is persisted as `Installation.bootstrapFlavor`
+(missing field in old records = `tarball`; the value is written
+explicitly on every save so old records converge).
+
+### Packages flavor mechanics (Debian family)
+
+Division of labour: **Kotlin owns trust, transport, environment,
+progress; debootstrap owns all dpkg/apt logic** (dependency
+resolution, unpack order, the dpkg database, maintainer scripts).
+Nothing in Kotlin parses a Depends line or fabricates dpkg state.
+
+1. **Trust phase** (Kotlin, before any downloaded code runs): fetch
+   `dists/<suite>/InRelease`, verify the clearsign against the shipped
+   `res/raw/debian_archive_keyring.asc` (`Clearsign.kt` — RFC 4880
+   cleartext canonicalization, NOT the detached-sig path; vectors in
+   `app/src/test/resources/debian-archive/`), enforce `Valid-Until`
+   (reject, small fixed skew — this is the replay defence), fetch
+   `Packages.xz` **by hash** out of the verified body (sid republishes
+   several times a day; by-hash is the only race-free fetch), verify
+   its digest, stream-parse to `name -> (Filename, Size, SHA256)`.
+2. **Workspace guest**: `distros/<id>/bootstrap-work/` is laid out as
+   a minimal rootfs — busybox-static plus libc6/libcrypt1/perl-base
+   (debootstrap's pkgdetails needs perl; upstream has no shell
+   fallback), all extracted in Kotlin from index-verified debs; shims
+   for the exact paths `startInside` hardcodes (`/usr/bin/env` grows a
+   `-C` shim because busybox env lacks it, `/bin/bash` aliases busybox
+   ash); the vendored debootstrap tree from the APK asset
+   (`packDebootstrap` Gradle task, pin in `deps/deps.list`); and a
+   `file://` mirror of verified files. The method layer enters it with
+   the same `runInside` every install step uses — no new execution
+   machinery. Every guest command starts with an applet-farm preamble
+   (`busybox --list` → symlinks) so ar/tar/wget/sha256sum exist as
+   PATH commands.
+3. **Resolve**: `debootstrap --print-debs` in the workspace guest
+   (resolution needs only the index; verified to work against a
+   `file://` mirror with an empty pool). Kotlin maps the ~76 names
+   through the parsed index and downloads each deb into a
+   content-addressed pool cache (`bootstrap-pkgs-<cacheKey>/<sha256>.deb`
+   under `BootstrapCache`), SHA-256-verified against the index before
+   use, then copies them into the workspace mirror. A pool 404 means
+   the archive rotated mid-install: one clean re-resolve from a fresh
+   `InRelease`, never mixing files from two index generations.
+4. **Stage 1** `debootstrap --foreign --extractor=ar` in the workspace
+   guest extracts into `bootstrap-work/rootfs/`, which is then moved
+   to the final `rootfs/`. **Stage 2** `debootstrap --second-stage`
+   runs inside the real rootfs (`runInside`, freshly-unpacked
+   dpkg/bash; `/proc` from the per-spawn binds). The workspace is
+   deleted on success; on failure `RootfsCleaner` reaps it at
+   uninstall (explicit `bootstrap-work` entry in its pass 2).
+5. Rejoin the flavor-agnostic tail: `configure → TawcInstaller →
+   initPackageManager → installBasePackages`.
+
+debootstrap runs with `--no-check-sig`. **That flag weakens nothing**:
+verification already happened in Kotlin upstream of it — the local
+mirror's `InRelease` was clearsign-verified against the shipped
+keyring, the index hash-verified against the InRelease, and every pool
+deb hash-verified against the index. debootstrap only ever reads that
+pre-verified local mirror; there is no network fetch it could skip a
+check on. Do not "fix" the flag away (it would just make debootstrap
+re-verify files Kotlin already verified, with a gpgv it doesn't have),
+and do not weaken the Kotlin phase because "debootstrap will check" —
+it won't. See the hard rules below.
+
+busybox quirk that cost a debugging session: Debian's busybox config
+enables the standalone shell, so ash re-execs `/proc/self/exe` for
+nearly every applet. tawcroot now substitutes the stashed guest exe
+path on exec of `/proc/self/exe` (`exec_handler.c`), mirroring its
+readlink synthesis — without that, every non-NOFORK applet died with
+loader exit 68.
+
 ## Bootstrap integrity (load-bearing — do not weaken)
 
 **Every byte we lay down inside the chroot's rootfs is run as root
@@ -837,6 +945,21 @@ Hard rules:
   carve-outs. Both bootstrap fetches now go over TLS; if a future
   source is HTTP-only, mirror it via something with a valid cert
   rather than re-opening cleartext for the whole app.
+- **The packages flavor's trust boundary is Kotlin, before any
+  downloaded code runs.** Everything debootstrap ever reads — the
+  `InRelease`, the package index, every deb, even the busybox/perl the
+  workspace itself executes — is hash-verified against the
+  shipped-key-verified `InRelease` first, in Kotlin
+  (`PackageBootstrapInstaller`). debootstrap's `--no-check-sig` is
+  therefore not a verification bypass and must never be "compensated
+  for" by softening the Kotlin phase; conversely, no step of the
+  Kotlin phase (clearsign verify, `Valid-Until` reject, by-hash index
+  fetch, per-deb SHA-256) may be dropped on the theory that
+  debootstrap re-checks — it doesn't. **No runtime key fetch, ever**:
+  the Debian archive keyring ships in the APK
+  (`res/raw/debian_archive_keyring.asc`); if the archive rotates all
+  its keys, installs fail until a new APK ships — same intended
+  failure mode as the Arch PGP paths.
 - **Removing or downgrading these checks is a security regression
   even if it makes a CI failure go away.** Code review should treat
   changes that delete a `BootstrapVerification`, drop a `.sig` URL,
@@ -851,6 +974,7 @@ Hard rules:
 | ALARM aarch64 (`fl.us.mirror.archlinuxarm.org`, HTTPS) | PGP detached signature `<tarball>.sig`, against the Arch Linux ARM Build System key (`68B3 537F 39A3 13B3 E574 D067 7719 3F15 2BDB E6A6`) shipped at `res/raw/archlinuxarm_signing_key.asc` — the same key `pacman-key --populate archlinuxarm` pins for packages | `BootstrapVerification.Pgp` in `ArchLinuxArm.kt` |
 | Manjaro ARM aarch64 (`github.com/manjaro-arm/rootfs/releases`, HTTPS) | SHA-256 from the GitHub Releases REST API: `api.github.com/repos/manjaro-arm/rootfs/releases/latest` returns the asset's server-computed `digest: sha256:<hex>`. We fetch that JSON over HTTPS in `ManjaroArm.resolveBootstrap`, then verify the downloaded tarball's SHA-256 matches before extract | `BootstrapVerification.Sha256` (Manjaro path) in `ManjaroArm.kt` |
 | Void Linux x86_64 / aarch64 glibc (`repo-default.voidlinux.org/live/current/`, HTTPS) | SHA-256 from upstream `sha256sum.txt`, **and** the minisign (Ed25519) signature `sha256sum.sig` over that manifest, checked against the per-image-date Void release key — bundled in `VoidReleaseKeys` from void-packages on GitHub, i.e. a second origin. `VoidSha256Resolver.resolveLatest` verifies the signature before trusting any digest from the manifest, then the tarball's SHA-256 is checked before extract | `Minisign.kt` + `VoidSha256Resolver.kt`, yielding `BootstrapVerification.Sha256` in `VoidLinux{X86_64,Aarch64}.kt` |
+| Debian sid packages flavor (`deb.debian.org`, debug-only) | Clearsigned `dists/sid/InRelease` verified against the Debian Archive Automatic Signing Keys 12/bookworm + 13/trixie shipped at `res/raw/debian_archive_keyring.asc`; `Valid-Until` enforced (replay defence); `Packages.xz` fetched by-hash and digest-checked against the verified body; every `.deb` SHA-256-checked against the index before debootstrap sees it | `Clearsign.kt` / `DebianRelease.kt` / `PackageBootstrapInstaller.kt`; see *Bootstrap flavors* |
 | Debian sid x86_64 / aarch64 (`raw.githubusercontent.com/debuerreotype/docker-debian-artifacts`, HTTPS) | SHA-256 from the official debuerreotype Docker artifact OCI manifest. We resolve the `dist-amd64` / `dist-arm64v8` branch tip to a commit SHA via the GitHub API, fetch `image-manifest.json` at that pinned commit, read the single gzip layer digest, then verify `rootfs.tar.gz` (fetched from the same commit) against it before extract. Commit-pinning closes the mutable-branch race; the trust profile is still a single HTTPS origin (digest and tarball from the same repo) plus OCI digest sanity check | `BootstrapVerification.Sha256` (Debian path) in `DebianSid.kt` / `DebianDockerResolver.kt` |
 | In-chroot pacman packages | Default `SigLevel = Required DatabaseOptional`, against the keyring populated by `pacman-key --populate archlinux` / `archlinuxarm` / `archlinuxarm manjaro manjaro-arm` | `ArchPacmanCommon.kt` (the `Never` line was removed, `--populate` is no longer `\|\| true`'d) |
 

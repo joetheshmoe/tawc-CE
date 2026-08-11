@@ -48,6 +48,16 @@ class InstallActivity : AppCompatActivity() {
     private var labelEdited: Boolean = false
 
     /**
+     * Bootstrap-flavor pick, as a [me.phie.tawc.install.distro.BootstrapFlavor.id]
+     * string. Null means "the distro's supported flavor" (the only
+     * possibility in release builds — the row is debug-only and only
+     * rendered when the selected distro implements >1 flavor). Reset
+     * to null when the distro selection changes.
+     */
+    private var selectedBootstrap: String? = null
+    private var bootstrapRow: LinearLayout? = null
+
+    /**
      * External-storage binds the install starts with (see
      * notes/external-binds.md). Starts empty, edited via
      * [ManageBindsActivity], passed to the service as JSON. Only
@@ -104,6 +114,7 @@ class InstallActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         selectedMethod = savedInstanceState?.getString(KEY_METHOD)
         selectedDistro = savedInstanceState?.getString(KEY_DISTRO)
+        selectedBootstrap = savedInstanceState?.getString(KEY_BOOTSTRAP)
         labelEdited = savedInstanceState?.getBoolean(KEY_LABEL_EDITED) == true
         useCacheProxy = when {
             savedInstanceState?.containsKey(KEY_USE_PROXY) == true ->
@@ -151,6 +162,7 @@ class InstallActivity : AppCompatActivity() {
         }
         selectedMethod?.let { outState.putString(KEY_METHOD, it) }
         selectedDistro?.let { outState.putString(KEY_DISTRO, it) }
+        selectedBootstrap?.let { outState.putString(KEY_BOOTSTRAP, it) }
         useCacheProxy?.let { outState.putBoolean(KEY_USE_PROXY, it) }
         outState.putBoolean(KEY_ANDO, andoEnabled)
         outState.putString(KEY_BINDS, ExternalBind.toJsonArray(pendingBinds).toString())
@@ -169,6 +181,18 @@ class InstallActivity : AppCompatActivity() {
         selectedDistro = initialDistro
 
         s.addView(buildDistroPicker(available, pad), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+
+        // Dev-only bootstrap-flavor radio row, between the distro
+        // picker and the label field. Rendered only when the selected
+        // distro implements >1 flavor — which in release builds is
+        // effectively never surfaced, since non-supported flavors are
+        // rejected by the service gate anyway.
+        if (me.phie.tawc.BuildConfig.DEBUG) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            bootstrapRow = row
+            updateBootstrapRow()
+            s.addView(row, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+        }
 
         s.addView(buildInstallDirField(available, savedLabelText), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
 
@@ -277,6 +301,11 @@ class InstallActivity : AppCompatActivity() {
         distroGroup.setOnCheckedChangeListener { _, checkedId ->
             idsByKey[checkedId]?.let {
                 selectedDistro = it
+                // Flavor picks don't transfer across distros — reset
+                // to the new distro's supported default and rebuild
+                // the (dev-only) radio row.
+                selectedBootstrap = null
+                updateBootstrapRow()
                 // Auto-update the label default when the user hasn't
                 // typed anything custom yet — flipping from "Arch Linux
                 // (x86)" to "Arch Linux ARM" should follow.
@@ -288,6 +317,47 @@ class InstallActivity : AppCompatActivity() {
             }
         }
         return container
+    }
+
+    /**
+     * (Re)populate the dev-only bootstrap-flavor radio row for the
+     * currently selected distro. Hidden entirely when the distro has a
+     * single flavor. See `plans`-era rationale in
+     * notes/installation.md "Bootstrap flavors".
+     */
+    private fun updateBootstrapRow() {
+        val row = bootstrapRow ?: return
+        row.removeAllViews()
+        val distro = DistroRegistry.availableForHost().firstOrNull { it.key == selectedDistro }
+        val flavors = distro?.bootstrapFlavors?.keys.orEmpty()
+        if (distro == null || flavors.size < 2) {
+            row.visibility = View.GONE
+            return
+        }
+        row.visibility = View.VISIBLE
+        row.addView(
+            TextView(this).apply { text = getString(R.string.install_bootstrap_label); textSize = 14f },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT),
+        )
+        val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val idsByFlavor = mutableMapOf<Int, String>()
+        for (f in flavors) {
+            val rid = View.generateViewId()
+            idsByFlavor[rid] = f.id
+            group.addView(
+                RadioButton(this).apply {
+                    id = rid
+                    text = if (f == distro.supportedFlavor) "${f.id} (supported)" else f.id
+                },
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT),
+            )
+        }
+        row.addView(group, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        val initial = selectedBootstrap ?: distro.supportedFlavor.id
+        idsByFlavor.entries.firstOrNull { it.value == initial }?.let { group.check(it.key) }
+        group.setOnCheckedChangeListener { _, checkedId ->
+            idsByFlavor[checkedId]?.let { selectedBootstrap = it }
+        }
     }
 
     /**
@@ -530,6 +600,7 @@ class InstallActivity : AppCompatActivity() {
         val launch = {
             InstallationService.startInstall(
                 this, targetId, methodKey, distroKey, labelText, mirrorProxyUrl, bindsJson, andoEnabled,
+                selectedBootstrap,
             )
             startActivity(LogScreenActivity.intentFor(this, "install:$targetId"))
             finish()
@@ -565,5 +636,6 @@ class InstallActivity : AppCompatActivity() {
         private const val KEY_USE_PROXY = "tawc.install.useCacheProxy"
         private const val KEY_BINDS = "tawc.install.externalBinds"
         private const val KEY_ANDO = "tawc.install.ando"
+        private const val KEY_BOOTSTRAP = "tawc.install.bootstrap"
     }
 }

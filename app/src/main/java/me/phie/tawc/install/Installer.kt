@@ -3,7 +3,11 @@ package me.phie.tawc.install
 import android.content.Context
 import me.phie.tawc.AndoBrokers
 import me.phie.tawc.R
+import me.phie.tawc.install.distro.BootstrapFlavor
 import me.phie.tawc.install.distro.Distro
+import me.phie.tawc.install.distro.PackageBootstrap
+import me.phie.tawc.install.distro.TarballBootstrap
+import me.phie.tawc.install.pkgbootstrap.PackageBootstrapInstaller
 import me.phie.tawc.install.util.AppOwnership
 import me.phie.tawc.install.util.HumanSize
 import java.io.File
@@ -14,6 +18,10 @@ import java.io.InterruptedIOException
  * Generic install/uninstall pipeline. The shape is the same regardless
  * of distro family (Arch today, Ubuntu/Fedora later); per-distro policy
  * lives in the [Distro] passed in.
+ *
+ * Stages 2-4 below are the tarball flavor's; a [PackageBootstrap]
+ * dispatches them to [PackageBootstrapInstaller] instead (see
+ * notes/installation.md "Bootstrap flavors") and rejoins at stage 5.
  *
  * Stages, mirroring [InstallStage]:
  *
@@ -81,6 +89,13 @@ class Installer(
      * included). Default false — opt-in, fail-closed.
      */
     private val andoEnabled: Boolean = false,
+    /**
+     * Which bootstrap flavor to install. `null` means the distro's
+     * supported flavor — the only value reachable in release builds
+     * ([InstallationService] rejects anything else there). The
+     * uninstall path never reads this.
+     */
+    private val bootstrapFlavor: BootstrapFlavor? = null,
 ) {
     /** Throws on failure. Reports progress + log lines via the callbacks. */
     fun install(
@@ -130,7 +145,12 @@ class Installer(
         // ran against (matters for distros with dynamic resolution like
         // ManjaroArm, where the latest GitHub release tag changes
         // weekly). Failure here aborts before disk state is laid down.
-        val bootstrap = distro.resolveBootstrap(log, mirrorProxy)
+        val flavor = bootstrapFlavor ?: distro.supportedFlavor
+        val bootstrap = distro.resolveBootstrap(log, mirrorProxy, flavor)
+        val sourceUrl = when (bootstrap) {
+            is TarballBootstrap -> bootstrap.url
+            is PackageBootstrap -> bootstrap.archiveRoot
+        }
 
         store.save(
             Installation(
@@ -139,12 +159,13 @@ class Installer(
                 arch = distro.androidAbi,
                 method = method.key,
                 installedAtMillis = System.currentTimeMillis(),
-                sourceUrl = bootstrap.url,
+                sourceUrl = sourceUrl,
                 state = Installation.State.INSTALLING,
                 installedAtAppVersionCode = appVersionCode,
                 label = label,
                 externalBinds = externalBinds,
                 andoEnabled = andoEnabled,
+                bootstrapFlavor = flavor.id,
             )
         )
         // Bring the ando broker listener up (or down) to match the
@@ -152,6 +173,71 @@ class Installer(
         // steps can use ando when enabled. See notes/ando.md.
         AndoBrokers.refresh(context)
 
+        // Stages 1-3 diverge by flavor: the tarball path downloads/
+        // verifies/extracts one archive; the packages path assembles
+        // the rootfs from signed repo metadata + debootstrap. Both
+        // rejoin at the flavor-agnostic configure step below.
+        when (bootstrap) {
+            is TarballBootstrap ->
+                installTarballBootstrap(bootstrap, rootfsPath, ::checkCancel, progress, log)
+            is PackageBootstrap ->
+                PackageBootstrapInstaller(
+                    context, store, cache, distro, method, id, bootstrap, mirrorProxy,
+                ).install(::checkCancel, progress, log)
+        }
+
+        checkCancel()
+        // Stage 3: configure. /etc files via Distro.configure. The
+        // chroot-entry mechanics (mounts, bind-table, setsid, exec)
+        // live entirely in [InstallationMethod.startInside] now —
+        // there's nothing to materialise on disk between calls.
+        progress(InstallProgress(InstallStage.CONFIGURING, context.getString(R.string.install_progress_configuring_chroot)))
+        distro.configure(method, rootfsPath, mirrorProxy, log)
+        // Lay down everything the app ships per-rootfs (libhybris into
+        // /usr/lib/hybris, the glvnd vendor JSON, …) as real files via
+        // [TawcInstaller]. Must follow distro.configure (which may
+        // create the /usr tree we're writing into) and precede the
+        // package-manager bootstrap so any pacman scriptlet that
+        // touches our paths sees a coherent state. Idempotent: the
+        // (id, app-stamp) pair gets recorded so the same call from
+        // [me.phie.tawc.TawcApplication.onCreate] no-ops on subsequent
+        // app starts until an APK upgrade bumps the stamp.
+        TawcInstaller.installInto(context, store, id, log)
+
+        checkCancel()
+        // Stage 4: package-manager bootstrap. State stays INSTALLING
+        // throughout — if either pacman invocation fails the service
+        // wraps it as FAILED and the only recovery is uninstall +
+        // install again.
+        progress(InstallProgress(InstallStage.PKG_KEYRING, context.getString(R.string.install_progress_initializing_package_manager)))
+        distro.initPackageManager(method, rootfsPath, log)
+
+        checkCancel()
+        // Stage 5: install base packages.
+        progress(InstallProgress(
+            InstallStage.PKG_INSTALL,
+            context.getString(R.string.install_progress_installing_base_packages),
+        ))
+        distro.installBasePackages(method, rootfsPath, log)
+
+        // All stages succeeded — flip to READY. From this point the
+        // gate refuses install and only allows uninstall.
+        store.setState(id, Installation.State.READY)
+        progress(InstallProgress(InstallStage.DONE, context.getString(R.string.install_progress_installed)))
+    }
+
+    /**
+     * Tarball flavor, stages 1-3: download the bootstrap tarball into
+     * the cache, integrity-check it against the distro's
+     * [BootstrapVerification] policy, extract onto the fresh rootfs.
+     */
+    private fun installTarballBootstrap(
+        bootstrap: TarballBootstrap,
+        rootfsPath: String,
+        checkCancel: () -> Unit,
+        progress: (InstallProgress) -> Unit,
+        log: (String) -> Unit,
+    ) {
         // Funnel the bootstrap fetch through the dev-time mirror cache
         // when set. The proxy URL is only what the wire request goes to;
         // metadata.json's [Installation.sourceUrl] still records the
@@ -255,45 +341,6 @@ class Installer(
         ) { line ->
             log("tar: $line")
         }
-
-        checkCancel()
-        // Stage 3: configure. /etc files via Distro.configure. The
-        // chroot-entry mechanics (mounts, bind-table, setsid, exec)
-        // live entirely in [InstallationMethod.startInside] now —
-        // there's nothing to materialise on disk between calls.
-        progress(InstallProgress(InstallStage.CONFIGURING, context.getString(R.string.install_progress_configuring_chroot)))
-        distro.configure(method, rootfsPath, mirrorProxy, log)
-        // Lay down everything the app ships per-rootfs (libhybris into
-        // /usr/lib/hybris, the glvnd vendor JSON, …) as real files via
-        // [TawcInstaller]. Must follow distro.configure (which may
-        // create the /usr tree we're writing into) and precede the
-        // package-manager bootstrap so any pacman scriptlet that
-        // touches our paths sees a coherent state. Idempotent: the
-        // (id, app-stamp) pair gets recorded so the same call from
-        // [me.phie.tawc.TawcApplication.onCreate] no-ops on subsequent
-        // app starts until an APK upgrade bumps the stamp.
-        TawcInstaller.installInto(context, store, id, log)
-
-        checkCancel()
-        // Stage 4: package-manager bootstrap. State stays INSTALLING
-        // throughout — if either pacman invocation fails the service
-        // wraps it as FAILED and the only recovery is uninstall +
-        // install again.
-        progress(InstallProgress(InstallStage.PKG_KEYRING, context.getString(R.string.install_progress_initializing_package_manager)))
-        distro.initPackageManager(method, rootfsPath, log)
-
-        checkCancel()
-        // Stage 5: install base packages.
-        progress(InstallProgress(
-            InstallStage.PKG_INSTALL,
-            context.getString(R.string.install_progress_installing_base_packages),
-        ))
-        distro.installBasePackages(method, rootfsPath, log)
-
-        // All stages succeeded — flip to READY. From this point the
-        // gate refuses install and only allows uninstall.
-        store.setState(id, Installation.State.READY)
-        progress(InstallProgress(InstallStage.DONE, context.getString(R.string.install_progress_installed)))
     }
 
     /**

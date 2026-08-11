@@ -616,6 +616,47 @@ tawcAbis.forEach { abi ->
     }
 }
 
+// Pack the vendored debootstrap tree (deps/debootstrap, pinned in
+// deps/deps.list) into an asset tar for the packages bootstrap flavor
+// (me.phie.tawc.install.pkgbootstrap.PackageBootstrapInstaller). A tar
+// because the Android asset packager strips symlinks from individual
+// assets and `scripts/sid` & friends are symlinks; the runtime
+// extracts it with ProotArchiveExtractor, symlinks intact.
+// Arch-independent (shell scripts), so this lives outside the per-ABI
+// blocks.
+run {
+    val tawcRoot = rootProject.projectDir
+    val debootstrapDir = "$tawcRoot/deps/debootstrap"
+    val debootstrapAssetFile = "src/main/assets/debootstrap/debootstrap.tar"
+
+    val ensureDebootstrapTask = tasks.register<Exec>("ensureDebootstrap") {
+        workingDir = tawcRoot
+        commandLine("scripts/ensure-deps.sh", "debootstrap")
+        inputs.file("$tawcRoot/scripts/ensure-deps.sh")
+        inputs.file("$tawcRoot/deps/deps.list")
+        inputs.file("$tawcRoot/scripts/lib/deps.sh")
+        outputs.file("$debootstrapDir/debootstrap")
+    }
+
+    val packDebootstrapTask = tasks.register<Exec>("packDebootstrap") {
+        dependsOn(ensureDebootstrapTask)
+        doFirst { mkdir(file(debootstrapAssetFile).parentFile) }
+        workingDir = file(debootstrapDir)
+        // Only what the runtime invokes: the entry script, the shared
+        // functions library, and the per-suite scripts dir.
+        commandLine("tar", "--format=ustar",
+            "-cf", "${project.projectDir}/$debootstrapAssetFile",
+            "debootstrap", "functions", "scripts")
+        inputs.file("$tawcRoot/deps/deps.list")
+        inputs.property("depTreeState", depTreeState("debootstrap"))
+        outputs.file(debootstrapAssetFile)
+    }
+
+    tasks.named("preBuild") {
+        dependsOn(packDebootstrapTask)
+    }
+}
+
 // Cross-compile libhybris for aarch64 glibc on the host and pack it
 // (with symlinks preserved) as an APK asset. Extracted at runtime by
 // CompositorService.ensureLibhybrisExtracted into the app's filesDir

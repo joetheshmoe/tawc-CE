@@ -81,6 +81,15 @@ data class Installation(
      * per-distro ando bind emitted into the spawn's bind table.
      */
     val andoEnabled: Boolean = false,
+    /**
+     * Which [me.phie.tawc.install.distro.BootstrapFlavor] built this
+     * rootfs (`"tarball"` / `"packages"`). Records written before the
+     * field existed parse as [FLAVOR_TARBALL] — the only flavor that
+     * existed then — and because [toJson] always writes the field, the
+     * value becomes explicit on the next metadata write instead of
+     * leaning on the default forever.
+     */
+    val bootstrapFlavor: String = FLAVOR_TARBALL,
 ) {
     fun rootfsDir(store: InstallationStore): File = store.rootfsDir(id)
     fun metadataFile(store: InstallationStore): File = store.metadataFile(id)
@@ -94,6 +103,7 @@ data class Installation(
         put("installedAtMillis", installedAtMillis)
         put("installedAtAppVersionCode", installedAtAppVersionCode)
         put("sourceUrl", sourceUrl)
+        put("bootstrapFlavor", bootstrapFlavor)
         put("state", state.name)
         if (failure != null) put("failure", failure)
         if (label != null) put("label", label)
@@ -150,6 +160,11 @@ data class Installation(
         // [InstallationMethod.forKey] and the impl objects' KEY fields.
         const val METHOD_CHROOT = "chroot"
         const val METHOD_PROOT = "proot"
+
+        /** [bootstrapFlavor] values — mirror
+         *  [me.phie.tawc.install.distro.BootstrapFlavor.id]. */
+        const val FLAVOR_TARBALL = "tarball"
+        const val FLAVOR_PACKAGES = "packages"
 
         // Allowlist for the id component of `<app data>/distros/<id>/`.
         // The id flows into shell scripts (via `installDir.absolutePath`)
@@ -264,6 +279,7 @@ data class Installation(
                     }
                 else emptyList(),
                 andoEnabled = obj.optBoolean("andoEnabled", false),
+                bootstrapFlavor = obj.optString("bootstrapFlavor", FLAVOR_TARBALL),
             )
         }
 

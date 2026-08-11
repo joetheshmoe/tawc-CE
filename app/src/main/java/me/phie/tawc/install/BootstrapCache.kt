@@ -88,6 +88,16 @@ class BootstrapCache(private val dir: File) {
     fun tempFifoFor(arch: String): File = File(dir, "bootstrap-$arch.tar.fifo")
 
     /**
+     * Package pool for the packages bootstrap flavor: one directory
+     * per [cacheKey], files content-addressed as `<sha256>.deb`
+     * (verified by the installer before use, so reuse across retries
+     * is safe and eviction is per-file). Swept by [sweepStale] with
+     * the same TTL as the tarballs.
+     */
+    fun pkgPoolDir(cacheKey: String): File =
+        File(dir, "bootstrap-pkgs-$cacheKey").apply { mkdirs() }
+
+    /**
      * Two-pass janitor:
      *
      * 1. **TTL pass** — canonical `bootstrap-<arch>.tar.{zst,gz}` files
@@ -108,9 +118,23 @@ class BootstrapCache(private val dir: File) {
         val files = dir.listFiles() ?: return 0
         var deleted = 0
         for (f in files) {
-            // `isFile` is false for FIFOs, so we only filter out
-            // directories (none expected in this dir, but defensive).
-            if (f.isDirectory) continue
+            // Package-pool directories (`bootstrap-pkgs-<key>/`) get a
+            // per-file TTL sweep; the dir itself goes once empty.
+            // Other directories are left alone (none expected).
+            if (f.isDirectory) {
+                if (POOL_DIR_RE.matches(f.name)) {
+                    for (p in f.listFiles().orEmpty()) {
+                        if ((nowMillis - p.lastModified()) >= MAX_AGE_MILLIS && p.delete()) {
+                            Log.d(TAG, "Evicted bootstrap pkg cache: ${f.name}/${p.name}")
+                            deleted++
+                        }
+                    }
+                    if (f.listFiles().isNullOrEmpty() && f.delete()) {
+                        Log.d(TAG, "Evicted empty pkg pool dir: ${f.name}")
+                    }
+                }
+                continue
+            }
             val name = f.name
             val canonical = CANONICAL_NAME_RE.matches(name)
             val transient = TRANSIENT_NAME_RE.matches(name)
@@ -162,6 +186,9 @@ class BootstrapCache(private val dir: File) {
 
         /** `bootstrap-<arch>.tar.{zst,gz,xz}`. */
         private val CANONICAL_NAME_RE = Regex("""^bootstrap-[A-Za-z0-9_-]+\.tar\.(zst|gz|xz)$""")
+
+        /** `bootstrap-pkgs-<cacheKey>/` package-pool directories. */
+        private val POOL_DIR_RE = Regex("""^bootstrap-pkgs-[A-Za-z0-9_.-]+$""")
 
         /**
          * `bootstrap-<arch>.tar.fifo` (Archive's FIFO; `.tmp` is the

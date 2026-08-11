@@ -57,6 +57,24 @@ internal object ProotArchiveExtractor {
         stripPrefix: String?,
         onLine: (String) -> Unit,
     ) {
+        openTarStream(tarball).use { tin ->
+            extractStream(tin, destDir, stripPrefix, onLine)
+        }
+    }
+
+    /**
+     * Stream form of [extract] for callers that already hold a tar
+     * stream (e.g. a `data.tar.xz` member inside a `.deb`, see
+     * [me.phie.tawc.install.pkgbootstrap.DebExtractor]). Same
+     * mode-deferral and path-containment behaviour; does not close
+     * [tin].
+     */
+    internal fun extractStream(
+        tin: TarArchiveInputStream,
+        destDir: String,
+        stripPrefix: String?,
+        onLine: (String) -> Unit,
+    ) {
         val dest = File(destDir).apply { mkdirs() }
         // Record (relative path, archived mode) of every dir we create
         // so we can re-apply the archive's mode at the end. Keyed by
@@ -87,7 +105,7 @@ internal object ProotArchiveExtractor {
             return candidate
         }
 
-        openTarStream(tarball).use { tin ->
+        run {
             while (true) {
                 // Per-entry interrupt check: a multi-thousand-entry
                 // bootstrap takes seconds to extract on a phone, and

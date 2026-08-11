@@ -230,6 +230,21 @@ the APK — `scripts/build-app.sh` from a fresh clone is enough.
 Run the standalone scripts only when iterating on the component itself
 (faster than a full Gradle round-trip).
 
+### debootstrap (asset tar, no compilation)
+
+`deps/debootstrap` (upstream salsa.debian.org, pinned in
+`deps/deps.list`) is packed verbatim — entry script, `functions`,
+`scripts/` with symlinks preserved — into
+`app/src/main/assets/debootstrap/debootstrap.tar` by the
+`packDebootstrapTask` Gradle task on `preBuild`. No host deps beyond
+`tar`. Consumed at runtime by the Debian *packages* bootstrap flavor
+(notes/installation.md "Bootstrap flavors"), which extracts it into the
+per-install bootstrap workspace. Bump the pin deliberately via
+`scripts/update-deps.sh debootstrap` and re-run the on-device packages
+install afterwards — debootstrap is unpatched by design; if a local
+patch ever becomes necessary, fork like libhybris rather than sedding
+at build time.
+
 ### libxkbcommon (static .a → linked into compositor)
 
 Cross-built once per ABI. NDK clang against bionic.

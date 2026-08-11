@@ -156,6 +156,10 @@ object RootfsCleaner {
         log("rm: container at $installPath (tawcroot, ando, metadata.json, rmdir)")
         deletePass(
             script = buildString {
+                // Packages-flavor bootstrap workspace (busybox, local
+                // mirror, debootstrap copy) — present iff a packages
+                // install failed before its own cleanup ran.
+                appendLine("[ ! -d ${Sh.quote("$installPath/bootstrap-work")} ] || find ${Sh.quote("$installPath/bootstrap-work")} -xdev -depth -delete >/dev/null")
                 appendLine("[ ! -d ${Sh.quote("$installPath/tawcroot")} ] || find ${Sh.quote("$installPath/tawcroot")} -xdev -depth -delete")
                 appendLine("rm -f ${Sh.quote("$installPath/ando/ando.sock")}")
                 appendLine("[ ! -d ${Sh.quote("$installPath/ando")} ] || rmdir ${Sh.quote("$installPath/ando")}")

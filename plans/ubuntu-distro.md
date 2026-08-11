@@ -3,8 +3,11 @@
 An apt distro with an app-shipped root of trust, on both ABIs, using only
 existing installer machinery. Ubuntu is "just another distro": one registry
 entry, one resolver, one shipped PGP key. It does not touch the Debian sid
-path. Independent of [package-bootstrap.md](package-bootstrap.md) — if that
-lands later, Ubuntu can grow a packages flavor like any other apt distro.
+path. Independent of the bootstrap-flavor infrastructure that landed for
+Debian sid (notes/installation.md "Bootstrap flavors") — Ubuntu can grow a
+packages flavor like any other apt distro once its zstd-compressed debs
+are handled (busybox in the bootstrap workspace can't decompress them;
+the Kotlin side already can).
 
 ## Verified upstream facts (2026-08-10)
 

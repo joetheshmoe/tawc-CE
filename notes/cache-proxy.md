@@ -162,6 +162,15 @@ so a release APK ignores the extra entirely. Debug builds log
 - Per-package files (`.pkg.tar.zst`, `.xbps`, `.deb`).
 - Repo metadata (`Packages.gz`, `Release`, `core.db`, mirrorlist
   files, etc.).
+- The Debian packages-bootstrap flavor's whole fetch set:
+  `dists/sid/InRelease`, the by-hash `Packages.xz`
+  (`…/by-hash/SHA256/<digest>`), and every resolved pool `.deb`
+  (~80 files). All are verification inputs checked in Kotlin against
+  the APK-shipped keyring, so proxying them is the inverted-rule case
+  below: safe (tampering fails closed) and required for cache
+  coherence. Pool files and by-hash indices are immutable by
+  construction and cache perfectly; `InRelease` is mutable upstream
+  but consistent within one cached generation.
 
 URL-keyed; the same proxy serves all distros with no per-distro
 config.

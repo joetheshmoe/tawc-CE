@@ -4,6 +4,7 @@ import me.phie.tawc.install.BootstrapFormat
 import me.phie.tawc.install.BootstrapVerification
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
+import java.io.IOException
 
 /**
  * Per-distro policy: bootstrap tarball, `/etc` configuration,
@@ -77,25 +78,52 @@ interface Distro {
      * [resolveBootstrap] does the runtime lookup. The placeholder
      * fails closed: if it reaches the verify stage the install throws.
      */
-    val bootstrap: DistroBootstrap
+    val bootstrap: TarballBootstrap
+
+    /**
+     * Every bootstrap flavor this distro implements. Default: just the
+     * tarball path, wrapping [bootstrap] — distros with a single
+     * flavor change nothing. A distro adding a `packages` flavor
+     * overrides this with both entries; the map's [DistroBootstrap]
+     * values are static descriptors ([resolveBootstrap] may substitute
+     * live data at install time, e.g. a resolved tarball digest).
+     */
+    val bootstrapFlavors: Map<BootstrapFlavor, DistroBootstrap>
+        get() = mapOf(BootstrapFlavor.TARBALL to bootstrap)
+
+    /**
+     * The one release-supported flavor. Anything else is a debug-only
+     * experiment: [me.phie.tawc.install.InstallationService] rejects
+     * non-supported flavors in release builds, mirroring the
+     * mirrorProxy gate.
+     */
+    val supportedFlavor: BootstrapFlavor get() = BootstrapFlavor.TARBALL
 
     /**
      * Resolve the bootstrap descriptor at install time. Default impl
-     * returns the static [bootstrap] field. Override for distros whose
-     * URL or [BootstrapVerification] digest must be looked up live —
-     * e.g. ManjaroArm hits the GitHub Releases API for the latest
-     * tag's `Manjaro-ARM-aarch64-latest.tar.gz` asset and reads its
-     * server-computed SHA-256 from the `digest` field. Runs before
-     * download; failures throw so we never attempt a download whose
-     * verification can't be set up.
+     * returns the static [bootstrapFlavors] entry. Override for
+     * distros whose URL or [BootstrapVerification] digest must be
+     * looked up live — e.g. ManjaroArm hits the GitHub Releases API
+     * for the latest tag's `Manjaro-ARM-aarch64-latest.tar.gz` asset
+     * and reads its server-computed SHA-256 from the `digest` field.
+     * Runs before download; failures throw so we never attempt a
+     * download whose verification can't be set up.
      *
      * @param mirrorProxy debug-builds-only knob: when non-null,
      *   implementations that fetch over HTTP for resolution (GitHub
      *   Releases API, Void's `sha256sum.txt`) should route through it
      *   so the dev cache stays coherent with the proxied tarball
      *   download. See `notes/cache-proxy.md`.
+     * @param flavor which of [bootstrapFlavors] to resolve; the
+     *   service has already validated it against the map and the
+     *   release gate by the time an install reaches this.
      */
-    fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy? = null): DistroBootstrap = bootstrap
+    fun resolveBootstrap(
+        log: (String) -> Unit,
+        mirrorProxy: MirrorProxy? = null,
+        flavor: BootstrapFlavor = supportedFlavor,
+    ): DistroBootstrap = bootstrapFlavors[flavor]
+        ?: throw IOException("distro $key has no ${flavor.id} bootstrap flavor")
 
     /** Base packages to `pacman -S --needed` (or equivalent) at install time. */
     val basePackages: List<String>
@@ -136,7 +164,29 @@ interface Distro {
 }
 
 /**
- * Bootstrap-tarball descriptor.
+ * How a rootfs is assembled. One of the sealed shapes below; each
+ * carries its trust root in the type — there is deliberately no
+ * verification-free variant to accidentally reach (see
+ * notes/installation.md "Bootstrap integrity").
+ */
+sealed interface DistroBootstrap
+
+/**
+ * Identifier for one entry of [Distro.bootstrapFlavors]. [id] is the
+ * wire/persist form: the broker `--arg bootstrap=` value and the
+ * `metadata.json` `bootstrapFlavor` field.
+ */
+enum class BootstrapFlavor(val id: String) {
+    TARBALL("tarball"),
+    PACKAGES("packages");
+
+    companion object {
+        fun fromId(id: String): BootstrapFlavor? = entries.firstOrNull { it.id == id }
+    }
+}
+
+/**
+ * Bootstrap-tarball descriptor — download one archive, verify, extract.
  *
  * @property url HTTP(S) URL of the tarball.
  * @property format compression format ([BootstrapCache] uses this for
@@ -155,9 +205,33 @@ interface Distro {
  *   [BootstrapVerification.ResolvedAtInstallTime], which throws there,
  *   so a distro cannot end up unverified by omission.
  */
-data class DistroBootstrap(
+data class TarballBootstrap(
     val url: String,
     val format: BootstrapFormat,
     val stripPrefix: String?,
     val verification: BootstrapVerification,
-)
+) : DistroBootstrap
+
+/**
+ * Assemble the rootfs from signed repo metadata + individual packages
+ * (Debian family today, via vendored debootstrap — see
+ * [me.phie.tawc.install.pkgbootstrap.PackageBootstrapInstaller]).
+ *
+ * The trust root is [keyResource]: a `res/raw` PGP keyring shipped in
+ * the APK, against which the suite's clearsigned `InRelease` is
+ * verified before any downloaded byte is trusted. Deliberately
+ * non-optional — this type has no "skip verification" shape at all.
+ *
+ * @property archiveRoot repo root, e.g. `http://deb.debian.org/debian`.
+ * @property suite e.g. `"sid"`.
+ * @property packagesArch dpkg architecture (`"arm64"`, `"amd64"`) —
+ *   names the `binary-<arch>` index; distinct from [Distro.linuxArch].
+ * @property keyResource `res/raw` keyring name (no extension),
+ *   registered in [me.phie.tawc.install.SignatureVerifier]'s key map.
+ */
+data class PackageBootstrap(
+    val archiveRoot: String,
+    val suite: String,
+    val packagesArch: String,
+    val keyResource: String,
+) : DistroBootstrap

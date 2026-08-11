@@ -23,6 +23,9 @@ app/src/main/assets/mesa-gfxstream/
 # packed by packMesaZink — see notes/libhybris-zink.md)
 app/src/main/assets/mesa-zink/
 
+# debootstrap asset (packed from deps/debootstrap by packDebootstrap)
+app/src/main/assets/debootstrap/
+
 # IDE
 .idea/
 *.iml

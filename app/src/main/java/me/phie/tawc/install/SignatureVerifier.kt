@@ -236,18 +236,24 @@ object SignatureVerifier {
         )
 
     /**
-     * Map a [BootstrapVerification.Pgp.keyResource] name to its
-     * `res/raw` id. Deliberately a hand-written `when` rather than
+     * Map of every shipped verification-key resource name to its
+     * `res/raw` id — [BootstrapVerification.Pgp.keyResource] and
+     * [me.phie.tawc.install.distro.PackageBootstrap.keyResource] both
+     * resolve through it. Deliberately a hand-written map rather than
      * `Resources.getIdentifier`: it is greppable, and an unknown name
-     * returns 0 so [loadKeyRing] fails closed instead of silently
-     * verifying against nothing. Adding a distro with a new key means
-     * adding a line here — `ShippedPgpKeysTest` fails if you forget.
+     * makes [loadKeyRing] fail closed instead of silently verifying
+     * against nothing. Adding a distro with a new key means adding a
+     * line here — `ShippedPgpKeysTest` and
+     * `BootstrapVerificationFailClosedTest` fail if you forget.
      */
-    internal fun rawKeyResourceId(resourceName: String): Int = when (resourceName) {
-        "arch_signing_key" -> R.raw.arch_signing_key
-        "archlinuxarm_signing_key" -> R.raw.archlinuxarm_signing_key
-        else -> 0
-    }
+    internal val KEY_RESOURCE_IDS: Map<String, Int> = mapOf(
+        "arch_signing_key" to R.raw.arch_signing_key,
+        "archlinuxarm_signing_key" to R.raw.archlinuxarm_signing_key,
+        "debian_archive_keyring" to R.raw.debian_archive_keyring,
+    )
+
+    internal fun rawKeyResourceId(resourceName: String): Int =
+        KEY_RESOURCE_IDS[resourceName] ?: 0
 
     /**
      * Parse an ASCII-armored public-key bundle. [label] only names the
@@ -269,7 +275,7 @@ object SignatureVerifier {
             PGPPublicKeyRingCollection(rings)
         }
 
-    private fun loadKeyRing(context: Context, resourceName: String): PGPPublicKeyRingCollection {
+    internal fun loadKeyRing(context: Context, resourceName: String): PGPPublicKeyRingCollection {
         val resId = rawKeyResourceId(resourceName)
         if (resId == 0) {
             throw IOException("Missing PGP key resource: res/raw/$resourceName")

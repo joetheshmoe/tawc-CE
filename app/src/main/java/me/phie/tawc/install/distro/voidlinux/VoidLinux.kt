@@ -5,8 +5,10 @@ import me.phie.tawc.install.BootstrapVerification
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
+import me.phie.tawc.install.distro.BootstrapFlavor
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroBootstrap
+import me.phie.tawc.install.distro.TarballBootstrap
 
 /**
  * Void Linux (glibc) — one base class, two singleton flavours
@@ -30,18 +32,23 @@ internal sealed class VoidLinux(
     final override val key: String = Installation.DISTRO_VOID
     final override val defaultLabel: String = "Void"
 
-    final override val bootstrap: DistroBootstrap = DistroBootstrap(
+    final override val bootstrap: TarballBootstrap = TarballBootstrap(
         url = "https://repo-default.voidlinux.org/live/current/",
         format = BootstrapFormat.XZ,
         stripPrefix = null,
         verification = BootstrapVerification.ResolvedAtInstallTime,
     )
 
-    final override fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy?): DistroBootstrap {
+    final override fun resolveBootstrap(
+        log: (String) -> Unit,
+        mirrorProxy: MirrorProxy?,
+        flavor: BootstrapFlavor,
+    ): DistroBootstrap {
+        require(flavor == BootstrapFlavor.TARBALL) { "void has only the tarball flavor" }
         log("void: resolving latest $linuxArch ROOTFS via sha256sum.txt")
         val r = VoidSha256Resolver.resolveLatest(linuxArch, mirrorProxy, log)
         log("void: latest=${r.filename} sha256=${r.sha256Hex}")
-        return DistroBootstrap(
+        return TarballBootstrap(
             url = r.downloadUrl,
             format = BootstrapFormat.XZ,
             stripPrefix = null,

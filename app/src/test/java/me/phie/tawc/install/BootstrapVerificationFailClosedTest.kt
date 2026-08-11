@@ -2,7 +2,11 @@ package me.phie.tawc.install
 
 import android.content.Context
 import android.content.ContextWrapper
+import me.phie.tawc.install.distro.BootstrapFlavor
 import me.phie.tawc.install.distro.DistroRegistry
+import me.phie.tawc.install.distro.PackageBootstrap
+import me.phie.tawc.install.distro.TarballBootstrap
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -56,22 +60,83 @@ class BootstrapVerificationFailClosedTest {
         SignatureVerifier.verify(context, tempTarball(data), BootstrapVerification.Sha256(hex))
     }
 
+    /**
+     * Walk **every flavor of every distro** and assert each states its
+     * trust root: tarball flavors keep the placeholder-iff-resolves-
+     * live biconditional; package flavors must name a keyring that is
+     * actually registered and shipped. It must stay impossible to add
+     * a flavor without a trust story.
+     */
     @Test
-    fun onlyResolveAtInstallTimeDistrosDeclareThePlaceholder() {
+    fun everyFlavorOfEveryDistroDeclaresItsTrustRoot() {
+        val rawDir = sequenceOf(
+            "src/main/res/raw",
+            "app/src/main/res/raw",
+            "../app/src/main/res/raw",
+        ).map(::File).firstOrNull { it.isDirectory }
+            ?: error("cannot locate res/raw")
         for (distro in DistroRegistry.all) {
-            val isPlaceholder =
-                distro.bootstrap.verification is BootstrapVerification.ResolvedAtInstallTime
-            val resolvesLive = distro.key in setOf(
-                Installation.DISTRO_VOID,
-                Installation.DISTRO_MANJARO,
-                Installation.DISTRO_DEBIAN_SID,
-            )
+            val flavors = distro.bootstrapFlavors
             assertTrue(
-                "${distro.displayName} (${distro.linuxArch}): static verification " +
-                    "${distro.bootstrap.verification::class.simpleName} does not match " +
-                    "its resolveBootstrap strategy",
-                isPlaceholder == resolvesLive,
+                "${distro.displayName}: supported flavor ${distro.supportedFlavor} " +
+                    "is not in bootstrapFlavors",
+                distro.supportedFlavor in flavors,
             )
+            assertEquals(
+                "${distro.displayName}: the TARBALL flavor entry must be the " +
+                    "static bootstrap field",
+                distro.bootstrap, flavors[BootstrapFlavor.TARBALL],
+            )
+            for ((flavor, b) in flavors) {
+                when (b) {
+                    is TarballBootstrap -> {
+                        val isPlaceholder =
+                            b.verification is BootstrapVerification.ResolvedAtInstallTime
+                        val resolvesLive = distro.key in setOf(
+                            Installation.DISTRO_VOID,
+                            Installation.DISTRO_MANJARO,
+                            Installation.DISTRO_DEBIAN_SID,
+                        )
+                        assertTrue(
+                            "${distro.displayName} (${distro.linuxArch}) $flavor: static " +
+                                "verification ${b.verification::class.simpleName} does not " +
+                                "match its resolveBootstrap strategy",
+                            isPlaceholder == resolvesLive,
+                        )
+                    }
+                    is PackageBootstrap -> {
+                        assertTrue(
+                            "${distro.displayName} $flavor: blank keyResource",
+                            b.keyResource.isNotBlank(),
+                        )
+                        assertTrue(
+                            "${distro.displayName} $flavor: keyResource " +
+                                "'${b.keyResource}' is not registered in " +
+                                "SignatureVerifier.KEY_RESOURCE_IDS — loadKeyRing " +
+                                "would fail closed at install time",
+                            b.keyResource in SignatureVerifier.KEY_RESOURCE_IDS,
+                        )
+                        assertTrue(
+                            "${distro.displayName} $flavor: res/raw/${b.keyResource}.asc missing",
+                            File(rawDir, "${b.keyResource}.asc").isFile,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /** Debian ships the packages flavor; nothing else does (yet). */
+    @Test
+    fun packagesFlavorShipsWhereExpected() {
+        for (distro in DistroRegistry.all) {
+            val hasPackages = BootstrapFlavor.PACKAGES in distro.bootstrapFlavors
+            assertEquals(
+                "${distro.displayName} (${distro.linuxArch})",
+                distro.key == Installation.DISTRO_DEBIAN_SID, hasPackages,
+            )
+            // Nothing has promoted a non-tarball flavor to supported.
+            assertEquals(BootstrapFlavor.TARBALL, distro.supportedFlavor)
         }
     }
 }

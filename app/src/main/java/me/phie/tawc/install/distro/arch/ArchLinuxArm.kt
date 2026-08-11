@@ -6,7 +6,7 @@ import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
 import me.phie.tawc.install.distro.Distro
-import me.phie.tawc.install.distro.DistroBootstrap
+import me.phie.tawc.install.distro.TarballBootstrap
 
 /**
  * Arch Linux ARM (ALARM) for aarch64. The bootstrap tarball is gzip
@@ -40,7 +40,7 @@ internal object ArchLinuxArm : Distro {
     private const val BOOTSTRAP_URL =
         "https://$PRIMARY_MIRROR/os/ArchLinuxARM-aarch64-latest.tar.gz"
 
-    override val bootstrap: DistroBootstrap = DistroBootstrap(
+    override val bootstrap: TarballBootstrap = TarballBootstrap(
         url = BOOTSTRAP_URL,
         format = BootstrapFormat.GZIP,
         stripPrefix = null,

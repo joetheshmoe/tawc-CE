@@ -6,7 +6,7 @@ import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
 import me.phie.tawc.install.distro.Distro
-import me.phie.tawc.install.distro.DistroBootstrap
+import me.phie.tawc.install.distro.TarballBootstrap
 
 /**
  * Arch Linux x86_64. Bootstrap is the geo-routed `pkgbuild.com` mirror
@@ -29,7 +29,7 @@ internal object ArchLinuxX86_64 : Distro {
     private const val BOOTSTRAP_URL =
         "https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst"
 
-    override val bootstrap: DistroBootstrap = DistroBootstrap(
+    override val bootstrap: TarballBootstrap = TarballBootstrap(
         url = BOOTSTRAP_URL,
         format = BootstrapFormat.ZSTD,
         stripPrefix = "root.x86_64",

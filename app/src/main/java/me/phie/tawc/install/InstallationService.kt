@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import me.phie.tawc.R
+import me.phie.tawc.install.distro.BootstrapFlavor
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.launcher.EntryShortcuts
@@ -203,6 +204,7 @@ class InstallationService : Service() {
                 intent.getStringExtra(EXTRA_MIRROR_PROXY),
                 intent.getStringExtra(EXTRA_EXTERNAL_BINDS),
                 intent.getBooleanExtra(EXTRA_ANDO, false),
+                intent.getStringExtra(EXTRA_BOOTSTRAP),
             )
             ACTION_UNINSTALL -> startUninstall(rawId)
             else -> {
@@ -251,6 +253,7 @@ class InstallationService : Service() {
         mirrorProxyUrl: String? = null,
         externalBindsJson: String? = null,
         andoEnabled: Boolean = false,
+        bootstrapFlavorId: String? = null,
     ) {
         if (!Installation.isValidId(id)) {
             rejectInstall(id, getString(R.string.install_reject_invalid_id))
@@ -328,6 +331,48 @@ class InstallationService : Service() {
         }
         if (!method.isAvailable(applicationContext)) {
             rejectInstall(id, getString(R.string.install_reject_method_unavailable, method.key))
+            return
+        }
+        // Bootstrap flavor. Null falls back to the distro's supported
+        // flavor; an explicit value must name an implemented flavor of
+        // this distro, and anything other than the supported flavor is
+        // debug-only — same gate shape as mirrorProxy below.
+        val bootstrapFlavor: BootstrapFlavor
+        if (bootstrapFlavorId != null) {
+            val parsed = BootstrapFlavor.fromId(bootstrapFlavorId)
+            if (parsed == null || parsed !in distro.bootstrapFlavors) {
+                rejectInstall(
+                    id,
+                    getString(
+                        R.string.install_reject_unknown_bootstrap,
+                        bootstrapFlavorId,
+                        distro.key,
+                        distro.bootstrapFlavors.keys.joinToString { it.id },
+                    ),
+                )
+                return
+            }
+            if (parsed != distro.supportedFlavor && !me.phie.tawc.BuildConfig.DEBUG) {
+                rejectInstall(
+                    id,
+                    getString(R.string.install_reject_bootstrap_release, parsed.id, distro.key),
+                )
+                return
+            }
+            bootstrapFlavor = parsed
+        } else {
+            bootstrapFlavor = distro.supportedFlavor
+        }
+        // The packages flavor runs its resolve/extract stages as a
+        // guest of the tawcroot method machinery; the debug-only
+        // proot/chroot methods haven't been taught that trick, so
+        // reject the combination up front instead of failing minutes
+        // into the install.
+        if (bootstrapFlavor == BootstrapFlavor.PACKAGES && method.key != TawcrootMethod.KEY) {
+            rejectInstall(
+                id,
+                getString(R.string.install_reject_bootstrap_method, bootstrapFlavor.id, method.key),
+            )
             return
         }
         // mirrorProxyUrl is debug-only. Both legitimate entry points
@@ -408,6 +453,7 @@ class InstallationService : Service() {
             val installer = Installer(
                 applicationContext, store, BootstrapCache(applicationContext),
                 distro, method, id, label, mirrorProxy, externalBinds, andoEnabled,
+                bootstrapFlavor,
             )
             try {
                 // runInterruptible maps coroutine cancellation onto a
@@ -890,6 +936,10 @@ class InstallationService : Service() {
         const val EXTRA_EXTERNAL_BINDS = "externalBinds"
         /** Whether ando (notes/ando.md) is enabled for this install. */
         const val EXTRA_ANDO = "ando"
+        /** Bootstrap flavor id (`tarball` / `packages`); absent = the
+         *  distro's supported flavor. Non-supported flavors are
+         *  debug-only, enforced in [startInstall]. */
+        const val EXTRA_BOOTSTRAP = "bootstrap"
 
         fun startInstall(
             context: Context,
@@ -900,6 +950,7 @@ class InstallationService : Service() {
             mirrorProxyUrl: String? = null,
             externalBindsJson: String? = null,
             andoEnabled: Boolean = false,
+            bootstrapFlavorId: String? = null,
         ) {
             val i = Intent(context, InstallationService::class.java)
                 .setAction(ACTION_INSTALL)
@@ -910,6 +961,7 @@ class InstallationService : Service() {
             if (mirrorProxyUrl != null) i.putExtra(EXTRA_MIRROR_PROXY, mirrorProxyUrl)
             if (externalBindsJson != null) i.putExtra(EXTRA_EXTERNAL_BINDS, externalBindsJson)
             if (andoEnabled) i.putExtra(EXTRA_ANDO, true)
+            if (bootstrapFlavorId != null) i.putExtra(EXTRA_BOOTSTRAP, bootstrapFlavorId)
             context.startForegroundService(i)
         }
 

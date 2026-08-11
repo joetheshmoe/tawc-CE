@@ -30,8 +30,18 @@ class ShippedPgpKeysTest {
      * upstream's own `archlinuxarm-keyring` package).
      */
     private val expected = mapOf(
-        "arch_signing_key" to "3E80CA1A8B89F69CBA57D98A76A5EF9054449A5C",
-        "archlinuxarm_signing_key" to "68B3537F39A313B3E574D06777193F152BDBE6A6",
+        "arch_signing_key" to listOf("3E80CA1A8B89F69CBA57D98A76A5EF9054449A5C"),
+        "archlinuxarm_signing_key" to listOf("68B3537F39A313B3E574D06777193F152BDBE6A6"),
+        // Debian Archive Automatic Signing Keys 12/bookworm +
+        // 13/trixie (both sign sid's InRelease via their signing
+        // subkeys 6ED0E7B82643E131 / 78DBA3BC47EF2265). Cross-checked
+        // 2026-08-10 against the debian-archive-keyring 2025.1 package
+        // from deb.debian.org and ftp-master.debian.org/keys/ —
+        // byte-identical key material from both origins.
+        "debian_archive_keyring" to listOf(
+            "B8B80B5B623EAB6AD8775C45B7C5D7D6350947F8",
+            "04B54C3CDCA79751B16BC6B5225629DF75B188BD",
+        ),
     )
 
     /**
@@ -57,13 +67,9 @@ class ShippedPgpKeysTest {
 
     @Test
     fun everyShippedKeyParsesWithTheExpectedFingerprint() {
-        for ((name, fingerprint) in expected) {
+        for ((name, fingerprints) in expected) {
             assertTrue("res/raw/$name.asc is missing", File(rawDir, "$name.asc").isFile)
-            assertEquals(
-                "$name should hold exactly one key ring",
-                1, masterFingerprints(name).size,
-            )
-            assertEquals(name, fingerprint, masterFingerprints(name).single())
+            assertEquals(name, fingerprints, masterFingerprints(name))
         }
     }
 
@@ -79,11 +85,16 @@ class ShippedPgpKeysTest {
 
     @Test
     fun everyDeclaredKeyResourceIsRegisteredAndShipped() {
-        val declared = DistroRegistry.all
-            .map { it.bootstrap.verification }
-            .filterIsInstance<BootstrapVerification.Pgp>()
-            .map { it.keyResource }
-            .toSet()
+        val declared = (
+            DistroRegistry.all
+                .map { it.bootstrap.verification }
+                .filterIsInstance<BootstrapVerification.Pgp>()
+                .map { it.keyResource } +
+            DistroRegistry.all
+                .flatMap { it.bootstrapFlavors.values }
+                .filterIsInstance<me.phie.tawc.install.distro.PackageBootstrap>()
+                .map { it.keyResource }
+        ).toSet()
         assertTrue("no distro declares a Pgp keyResource", declared.isNotEmpty())
         for (name in declared) {
             assertNotEquals(
@@ -119,7 +130,7 @@ class ShippedPgpKeysTest {
             ring("archlinuxarm_signing_key"), sig, "archlinuxarm_signing_key",
         )
         with(SignatureVerifier) {
-            assertEquals(expected["archlinuxarm_signing_key"], key.fingerprintHex())
+            assertEquals(expected.getValue("archlinuxarm_signing_key").single(), key.fingerprintHex())
         }
 
         val e = assertThrows(IOException::class.java) {

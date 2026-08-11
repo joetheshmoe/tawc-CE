@@ -3,7 +3,7 @@ package me.phie.tawc.install.distro.debian
 import me.phie.tawc.install.BootstrapFormat
 import me.phie.tawc.install.BootstrapVerification
 import me.phie.tawc.install.MirrorProxy
-import me.phie.tawc.install.distro.DistroBootstrap
+import me.phie.tawc.install.distro.TarballBootstrap
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -36,7 +36,7 @@ internal object DebianDockerResolver {
         suite: String,
         bashbrewArch: String,
         mirrorProxy: MirrorProxy?,
-    ): DistroBootstrap {
+    ): TarballBootstrap {
         val branch = "dist-$bashbrewArch"
         // Pin the branch tip to an immutable commit so the manifest and
         // the tarball are guaranteed to come from the same tree state.
@@ -61,7 +61,7 @@ internal object DebianDockerResolver {
             throw IOException("Debian $suite $bashbrewArch layer has unsupported mediaType $mediaType")
         }
         val digest = layer.getString("digest").removePrefix("sha256:")
-        return DistroBootstrap(
+        return TarballBootstrap(
             url = "$base/rootfs.tar.gz",
             format = BootstrapFormat.GZIP,
             stripPrefix = null,

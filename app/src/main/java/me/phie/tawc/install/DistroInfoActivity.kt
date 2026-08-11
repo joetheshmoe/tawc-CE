@@ -126,6 +126,10 @@ class DistroInfoActivity : AppCompatActivity() {
             rowLp(pad),
         )
         content.addView(infoRow(getString(R.string.distro_info_row_method), installation.method), rowLp(pad))
+        content.addView(
+            infoRow(getString(R.string.distro_info_row_bootstrap), installation.bootstrapFlavor),
+            rowLp(pad),
+        )
         content.addView(infoRow(getString(R.string.distro_info_row_state), stateLabel(installation.state)), rowLp(pad))
         if (installation.failure != null) {
             content.addView(infoRow(getString(R.string.distro_info_row_failure), installation.failure), rowLp(pad))

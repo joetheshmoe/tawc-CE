@@ -32,6 +32,7 @@ libxkbcommon	https://github.com/xkbcommon/libxkbcommon.git	7a31e3585edf78be28155
 proot	https://github.com/termux/proot.git	ab2e3464d04483b98a0614b470f3f8950d5a6468	master	deps/proot
 termux-app	https://github.com/termux/termux-app.git	401bbe54b8f4e68302b1ff70678015a24628fb1d	master	deps/termux-app
 cleat	https://codeberg.org/sphi/cleat.git	f53455f54700d7238097f903f461b85b41bfbd38	main	deps/cleat
+debootstrap	https://salsa.debian.org/installer-team/debootstrap.git	9c1e17bc3557efdf59468cfdc24ca0497f3b90f4	master	deps/debootstrap
 util-macros	https://gitlab.freedesktop.org/xorg/util/macros.git	a9d71e3fd8e6758b70be31c586921bbbcd2a8449	util-macros-1.20.2	deps/xwayland-src/util-macros
 xorgproto	https://gitlab.freedesktop.org/xorg/proto/xorgproto.git	67469711055522b8adb2d795b01e7ba98cb8816c	xorgproto-2024.1	deps/xwayland-src/xorgproto
 xtrans	https://gitlab.freedesktop.org/xorg/lib/libxtrans.git	cf05ba4a10c90da2c63805a5375e983b174e28b0	xtrans-1.6.0	deps/xwayland-src/xtrans

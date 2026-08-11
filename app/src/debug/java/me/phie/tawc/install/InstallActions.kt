@@ -67,6 +67,9 @@ internal object InstallActions {
                 it.toBooleanStrictOrNull()
                     ?: return ctx.fail("install: invalid boolean for ando '$it'")
             } ?: false
+            // Bootstrap flavor (tarball / packages); absent = the
+            // distro's supported flavor. Validated by the service gate.
+            val bootstrap = args["bootstrap"]
 
             val opId = "install:$id"
             tryOpenLogScreen(ctx.appContext, opId)
@@ -75,10 +78,12 @@ internal object InstallActions {
                 "distro=${distro ?: "(default)"} label=${label ?: "(default)"}" +
                 (mirrorProxy?.let { " mirrorProxy=$it" } ?: "") +
                 (externalBinds?.let { " externalBinds=$it" } ?: "") +
+                (bootstrap?.let { " bootstrap=$it" } ?: "") +
                 " ando=$ando")
 
             InstallationService.startInstall(
                 ctx.appContext, id, method, distro, label, mirrorProxy, externalBinds, ando,
+                bootstrap,
             )
             return mirrorOperation(opId, ctx)
         }

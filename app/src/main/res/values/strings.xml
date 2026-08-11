@@ -99,6 +99,7 @@
     <string name="distro_info_row_distro">Distro:</string>
     <string name="distro_info_row_architecture">Architecture:</string>
     <string name="distro_info_row_method">Method:</string>
+    <string name="distro_info_row_bootstrap">Bootstrap:</string>
     <string name="distro_info_row_state">State:</string>
     <string name="distro_info_row_failure">Failure:</string>
     <string name="distro_info_row_source">Source:</string>
@@ -188,6 +189,9 @@
     <string name="install_reject_method_not_enabled">method \'%1$s\' is not enabled in this build (enabled: %2$s)</string>
     <string name="install_reject_method_unavailable">method \'%1$s\' is not available on this device</string>
     <string name="install_reject_mirror_proxy_release">mirrorProxy is debug-build-only (got \'%1$s\')</string>
+    <string name="install_reject_unknown_bootstrap">unknown bootstrap flavor \'%1$s\' for %2$s (implemented: %3$s)</string>
+    <string name="install_reject_bootstrap_release">bootstrap flavor \'%1$s\' is not the supported flavor for %2$s; debug builds only</string>
+    <string name="install_reject_bootstrap_method">bootstrap flavor \'%1$s\' requires the tawcroot method (got \'%2$s\')</string>
     <string name="install_reject_bad_external_binds">invalid externalBinds: %1$s</string>
     <string name="install_reject_external_binds_method">external binds require the tawcroot method (got \'%1$s\')</string>
     <string name="install_cancel_title">Cancel install of \'%1$s\'?</string>
@@ -198,6 +202,13 @@
     <string name="install_progress_downloading_bootstrap">Downloading bootstrap: %1$s / %2$s</string>
     <string name="install_progress_verifying_bootstrap">Verifying bootstrap signature&#8230;</string>
     <string name="install_progress_extracting_rootfs">Extracting rootfs&#8230;</string>
+    <string name="install_progress_downloading_index">Downloading package index&#8230;</string>
+    <string name="install_progress_verifying_index">Verifying package index signature&#8230;</string>
+    <string name="install_progress_resolving_packages">Resolving base package set&#8230;</string>
+    <string name="install_progress_downloading_packages">Downloading packages (%1$d/%2$d): %3$s / %4$s</string>
+    <string name="install_progress_extracting_packages">Extracting base system&#8230;</string>
+    <string name="install_progress_second_stage">Configuring base system (dpkg)&#8230;</string>
+    <string name="install_bootstrap_label">Bootstrap (dev)</string>
     <string name="install_progress_configuring_chroot">Configuring chroot&#8230;</string>
     <string name="install_progress_initializing_package_manager">Initializing package manager&#8230;</string>
     <string name="install_progress_installing_base_packages">Installing base packages&#8230;</string>
