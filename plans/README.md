@@ -4,6 +4,7 @@ Future work and speculative implementation plans live here. Keep current-state
 design, build, and operational notes in [`../notes/`](../notes/).
 
 - [usecase_tests/](usecase_tests/README.md) - one-shot agent-run usecase test plans; see that README for the procedure.
+- [alarm-bootstrap-pgp.md](alarm-bootstrap-pgp.md) - swap ALARM's cross-mirror MD5 for upstream's now-published detached PGP signature, and drop the MD5 path.
 - [ando-am.md](ando-am.md) - termux-am-style in-app `am` behind broker interception of `ando am`, so unrooted guests can launch activities/broadcasts/services.
 - [audio.md](audio.md) - planned PipeWire/PulseAudio bridge to Android audio.
 - [clipboard-paste-focus-gate.md](clipboard-paste-focus-gate.md) - only serve the Android clipboard to the focused client; today any X11 client on the shared Xwayland can read it.
