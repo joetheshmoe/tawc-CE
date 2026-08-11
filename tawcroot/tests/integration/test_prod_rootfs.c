@@ -88,6 +88,9 @@ static bool build_rootfs(void)
 	snprintf(p, sizeof p, "%s/bin/static_execve_exit42", FAKE_ROOTFS);
 	if (!rh_copy_file(TAWCROOT_STATIC_EXECVE_EXIT42_BIN, p, 0755)) return false;
 
+	snprintf(p, sizeof p, "%s/bin/static_execve_proc_self_exe", FAKE_ROOTFS);
+	if (!rh_copy_file(TAWCROOT_STATIC_EXECVE_PROC_SELF_EXE_BIN, p, 0755)) return false;
+
 	snprintf(p, sizeof p, "%s/bin/static_drop_ids_execve", FAKE_ROOTFS);
 	if (!rh_copy_file(TAWCROOT_STATIC_DROP_IDS_EXECVE_BIN, p, 0755)) return false;
 
@@ -236,6 +239,27 @@ test(prod_rootfs_guest_does_execve)
 
 	const char *args[] = {
 		"-r", FAKE_ROOTFS, "--", "/bin/static_execve_exit42", NULL
+	};
+	test_int_eq(run_with(args), 42);
+
+	rh_rmrf(FAKE_ROOTFS);
+}
+
+/* execve("/proc/self/exe") must re-exec the *guest* binary, not the
+ * kernel-level link target (libtawcroot.so — mapping that over the
+ * running incarnation is LOADER_FAIL 68). This is busybox's
+ * standalone-shell applet-launch pattern (Debian's config), which the
+ * packages bootstrap flavor runs debootstrap under; the exec handler
+ * substitutes the stashed guest exe path, mirroring readlinkat's
+ * /proc/self/exe synthesis. The fixture execs itself with an extra
+ * arg and exits 42 from the re-exec'd image. */
+test(prod_rootfs_execve_proc_self_exe_is_self)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	test_true(build_rootfs());
+
+	const char *args[] = {
+		"-r", FAKE_ROOTFS, "--", "/bin/static_execve_proc_self_exe", NULL
 	};
 	test_int_eq(run_with(args), 42);
 

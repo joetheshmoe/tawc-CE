@@ -15,6 +15,7 @@
 #include "loader_exec.h"
 #include "loader_map.h"
 #include "path.h"
+#include "proc_shadow.h"
 #include "raw_sys.h"
 #include "shm.h"
 #include "tawc_uapi.h"
@@ -132,6 +133,16 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
                                    const char *const *envp)
 {
 	if (!path || !argv || !envp || argc < 0) return TAWC_EINVAL;
+
+	/* execve("/proc/self/exe", …): the kernel-level link points at
+	 * libtawcroot.so, which the loader would then try to map over the
+	 * running tawcroot image (LOADER_FAIL 68). Substitute the stashed
+	 * guest exe path — the same synthesis readlinkat performs — so the
+	 * guest re-execs the binary it believes it is running. Load-bearing
+	 * for busybox's standalone-shell mode (Debian's config), where ash
+	 * runs nearly every applet via a /proc/self/exe re-exec. */
+	if (tawcroot_guest_exe_path_len > 0 && tawcroot_is_proc_self_exe(path))
+		path = tawcroot_guest_exe_path;
 
 	/* (1) Probe the guest binary so failures surface as a clean -errno
 	 * to the guest rather than a phantom-process exit later. In rootfs

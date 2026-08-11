@@ -688,6 +688,19 @@ O_RDONLY)` to re-read the binary), we translate to the stashed
 guest path through the normal rootfs-relative path: the open
 reaches the actual binary on disk.
 
+`execve("/proc/self/exe", …)` gets the same substitution in the
+exec handler (`exec_handler.c::tawcroot_exec_handler_prepare`):
+the path is swapped for the stashed guest exe path before the
+probe/translate, so the guest re-execs the binary it believes it
+is running instead of the kernel's link target (libtawcroot.so —
+which the loader would then try to map over the running
+incarnation and die with `LOADER_FAIL(68)`). Load-bearing for
+busybox's standalone-shell mode (Debian's config), where ash runs
+nearly every applet via exactly this re-exec; the packages
+bootstrap flavor runs debootstrap under that busybox
+(notes/installation.md "Bootstrap flavors"). Guarded by
+`test_prod_rootfs.c::prod_rootfs_execve_proc_self_exe_is_self`.
+
 ### `/proc/<pid>/fd/<n>` reverse translation
 
 readlink of an fd magic link returns the kernel's HOST path for the

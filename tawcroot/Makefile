@@ -336,6 +336,15 @@ $(OUT)/programs/static_execve_exit42: $(SRC_TS)/integration/programs/static_exec
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
 
+# static_execve_proc_self_exe: re-execs itself via /proc/self/exe (the
+# busybox standalone-shell pattern). Guards the exec handler's
+# guest-exe substitution — without it the loader maps tawcroot over
+# itself and dies with LOADER_FAIL(68). See
+# test_prod_rootfs.c::prod_rootfs_execve_proc_self_exe_is_self.
+$(OUT)/programs/static_execve_proc_self_exe: $(SRC_TS)/integration/programs/static_execve_proc_self_exe_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
+
 # static_open_creat_argv1: minimal x86_64 fixture that opens argv[1]
 # with O_WRONLY|O_CREAT|O_TRUNC and exits 0. The orphan-bypass test
 # in test_exec_child.c uses this as the side-effect-bearing guest
