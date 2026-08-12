@@ -7,6 +7,7 @@ design, build, and operational notes in [`../notes/`](../notes/).
 - [alarm-package-bootstrap.md](alarm-package-bootstrap.md) - packages bootstrap flavor for Arch Linux ARM (pacman as the workspace guest, per-package sigs against the shipped build-system key; smaller install, weaker index trust than Debian's — documented).
 - [ando-am.md](ando-am.md) - termux-am-style in-app `am` behind broker interception of `ando am`, so unrooted guests can launch activities/broadcasts/services.
 - [audio.md](audio.md) - planned PipeWire/PulseAudio bridge to Android audio.
+- [f-droid.md](f-droid.md) - publish on F-Droid: verified current state, repo fixes (tarball checksums, toolchain pins), fastlane metadata, fdroiddata recipe; human-only steps (store copy, MR, reviewer contact) explicitly marked.
 - [clipboard-paste-focus-gate.md](clipboard-paste-focus-gate.md) - only serve the Android clipboard to the focused client; today any X11 client on the shared Xwayland can read it.
 - [gfxstream-bridge-remaining-work.md](gfxstream-bridge-remaining-work.md) - remaining GL/GLES and x86_64 AVD work for the gfxstream bridge backend.
 - [gl-on-gles-translator.md](gl-on-gles-translator.md) - possible in-house GL 3.3-core-on-ES 3.2 translator (glslang/SPIRV-Cross shader pipeline) for the modern-GL gap zink can't cover on Vulkan 1.1 devices.
