@@ -35,11 +35,11 @@ and launch as documented in AGENTS.md's Common Commands.
 | Component | Arch (`pacman -S`)                                     | Debian/Ubuntu (`apt install`)                        |
 |-----------|--------------------------------------------------------|------------------------------------------------------|
 | JDK 21    | `jdk21-openjdk`                                        | `openjdk-21-jdk`                                     |
-| Rust      | `rustup` (then `rustup default stable`)                | `rustup` (via rustup.rs)                             |
-| Rust Android targets (`error[E0463]: can't find crate for \`core\`` if missing) | `rustup target add aarch64-linux-android` (add `x86_64-linux-android` for emulator builds). The kumquat server is a Cargo dep of the compositor crate (`target_os="android"`-gated), so the same target also covers the gfxstream-bridge build; no extra toolchain. | same |
+| Rust      | `rustup` — the version is pinned by `rust-toolchain.toml` at the repo root (currently 1.93.0), so rustup installs it on first build; no `rustup default` needed | `rustup` (via rustup.rs)                             |
+| Rust Android targets (`error[E0463]: can't find crate for \`core\`` if missing) | Both Android targets are listed in `rust-toolchain.toml`, so rustup adds them automatically. Manually: `rustup target add aarch64-linux-android` (add `x86_64-linux-android` for emulator builds). The kumquat server is a Cargo dep of the compositor crate (`target_os="android"`-gated), so the same target also covers the gfxstream-bridge build; no extra toolchain. | same |
 | Rust glibc targets (`build-mesa-gfxstream.sh` cross-builds Mesa's gfxstream-vk Rust pieces) | `rustup target add aarch64-unknown-linux-gnu` (and `rustup target add x86_64-unknown-linux-gnu` for the emulator bridge) | same |
 | `bindgen` (Mesa's gfxstream-vk meson Rust bindings) | `cargo install bindgen-cli` | same |
-| Cargo NDK (cargo subcommand — `cargo build` will fail with `error: no such command: ndk` if missing) | `cargo install cargo-ndk` | same |
+| Cargo NDK (cargo subcommand — `cargo build` will fail with `error: no such command: ndk` if missing) | `cargo install cargo-ndk --version 4.1.2 --locked` (known-good; `cargo install cargo-ndk` for latest) | same |
 | Android SDK + NDK | install Android Studio, or use `sdkmanager` directly. Android platform API 36 is required by `compileSdk`; NDK version pinned in `app/build.gradle.kts` (currently 27.2.12479018). The SDK's `cmdline-tools` (for `apkanalyzer`, used by `scripts/check-no-dev-code.sh` on the release APK) and `build-tools` (zipalign/apksigner/aapt2) are both needed for `scripts/build-release-apk.sh`. | same |
 | Build basics | `base-devel`                                        | `build-essential pkg-config curl libarchive-tools`   |
 | Meson + Ninja (libxkbcommon) | `meson ninja`                            | `meson ninja-build`                                  |
