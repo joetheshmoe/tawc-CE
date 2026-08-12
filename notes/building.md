@@ -199,12 +199,25 @@ alone.
 | `./deps/gfxstream/`                        | `scripts/build-gfxstream-backend.sh`      |
 | `./deps/rutabaga_gfx/`                     | `scripts/ensure-deps.sh --patches rutabaga_gfx deps/rutabaga-patches/rutabaga_gfx`; Rust compositor kumquat server dep |
 
-Two tarball deps (`talloc`, `libmd`) are *not* in `deps.list` — their
-version is baked into the URL inside the build script, so a version
-bump auto-fetches a fresh extract. The extracts are never re-verified
-after that: hand edits or corruption in a `talloc-*`/`libmd` tree are
-invisible until the next version bump (accepted — delete the extract
-to force a clean re-fetch).
+Two tarball deps (`talloc`, `libmd`) are *not* in `deps.list` — they
+ship as release tarballs, not git repos, so their pin is a
+version + sha256 pair in the build script itself:
+
+| Dep     | Pinned in                    | Variables                              |
+|---------|------------------------------|----------------------------------------|
+| `libmd` | `scripts/build-xwayland.sh`  | `LIBMD_VERSION`, `LIBMD_SHA256`        |
+| `talloc`| `scripts/build-proot.sh`     | `TALLOC_VERSION`, `TALLOC_SHA256`      |
+
+Both go through `dep_fetch_tarball <url> <sha256> <dest>` from
+`scripts/lib/deps.sh`, which downloads when the file is absent and
+verifies the hash every time — so a truncated or tampered cached
+download fails as loudly as a fresh bad one. To bump either, change the
+version and the hash together; the mismatch error tells you the hash it
+actually got.
+
+The *extracts* are still not re-verified after unpacking: hand edits or
+corruption in a `talloc-*`/`libmd` tree are invisible until the next
+version bump (accepted — delete the extract to force a clean re-fetch).
 
 ### Bumping a dep
 

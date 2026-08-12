@@ -46,11 +46,14 @@ set -euo pipefail
 # SYSCALL_AVOIDER values, loader ELF base addresses, and the `ioctl`
 # filter rule. The pin (sha + repo URL) lives in deps/deps.list.
 #
-# talloc is a tarball, not a git checkout — version is in the URL, so
-# bumping TALLOC_VERSION below triggers a fresh download by construction
-# (no separate pin file needed).
+# talloc is a tarball, not a git checkout, so it can't live in
+# deps/deps.list — version + hash below are its pin. Bumping the version
+# triggers a fresh download by construction; bump the hash with it.
+# The tarball carries a good signature from Samba's distribution key
+# (fingerprint 9147A339719518EE9011BCB54793916113084025).
 TALLOC_VERSION="2.4.4"
 TALLOC_TARBALL_URL="https://download.samba.org/pub/talloc/talloc-${TALLOC_VERSION}.tar.gz"
+TALLOC_SHA256="55e47994018c13743485544e7206780ffbb3c8495e704a99636503e6e77abf59"
 
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -120,10 +123,7 @@ fetch_talloc() {
     if [ -d "$TALLOC_DIR" ]; then return 0; fi
     mkdir -p "$DEPS_DIR"
     local tarball="$DEPS_DIR/talloc-${TALLOC_VERSION}.tar.gz"
-    if [ ! -f "$tarball" ]; then
-        echo "==> downloading $TALLOC_TARBALL_URL"
-        curl -fsSL -o "$tarball" "$TALLOC_TARBALL_URL"
-    fi
+    dep_fetch_tarball "$TALLOC_TARBALL_URL" "$TALLOC_SHA256" "$tarball"
     echo "==> extracting talloc-${TALLOC_VERSION}"
     tar -xzf "$tarball" -C "$DEPS_DIR"
 }

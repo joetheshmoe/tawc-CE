@@ -21,6 +21,10 @@
 #                         from its pin. Missing checkouts are skipped
 #                         (cloned on demand by whichever build needs them).
 #   deps_all_names     -- echo every dep name, one per line, in manifest order.
+#   dep_fetch_tarball <url> <sha256> <dest>
+#                      -- download (if absent) and sha256-verify a tarball
+#                         dep. For the few deps that ship as release
+#                         tarballs instead of git repos.
 #   deps_tree_state <name|dest-prefix/>...
 #                      -- emit a working-tree fingerprint line per dep
 #                         (HEAD + tracked-edit hash). Read-only; used by
@@ -353,4 +357,33 @@ _dep_reset_inner() {
 dep_reset() {
     _dep_lookup "$1" || return 1
     _dep_with_lock _dep_reset_inner
+}
+
+# ---------------------------------------------------------------------------
+# Tarball deps. A handful of deps ship as release tarballs rather than git
+# repos (libmd, talloc); their version lives in the fetching script's URL,
+# not deps.list. Download them through this so the bytes are pinned by
+# hash the way git deps are pinned by commit.
+#
+#   dep_fetch_tarball <url> <sha256> <dest-file>
+#
+# Re-verifies an already-present file, so a truncated or tampered cached
+# download fails the same way a fresh bad one does.
+dep_fetch_tarball() {
+    local url="$1" want="$2" dest="$3" actual
+    if [ ! -f "$dest" ]; then
+        echo "==> downloading $url"
+        mkdir -p "$(dirname "$dest")"
+        curl -fsSL -o "$dest.part" "$url"
+        mv "$dest.part" "$dest"
+    fi
+    actual="$(sha256sum "$dest" | awk '{print $1}')"
+    if [ "$actual" != "$want" ]; then
+        echo "error: sha256 mismatch for $dest" >&2
+        echo "  expected $want" >&2
+        echo "  actual   $actual" >&2
+        echo "  (delete the file to re-download, or fix the pin if the" >&2
+        echo "   upstream version was bumped)" >&2
+        return 1
+    fi
 }

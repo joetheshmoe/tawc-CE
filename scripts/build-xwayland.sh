@@ -36,6 +36,12 @@ source "$SCRIPT_DIR/lib/deps.sh"
 SRC_ROOT="$REPO_DIR/deps/xwayland-src"
 PATCH_ROOT="$REPO_DIR/deps/xwayland-patches"
 
+# libmd ships as a release tarball rather than a git repo, so it can't
+# live in deps/deps.list. Version + hash are the pin; bump both together.
+# sha512 of this tarball matches Alpine 3.19's libmd APKBUILD.
+LIBMD_VERSION="1.1.0"
+LIBMD_SHA256="1bd6aa42275313af3141c7cf2e5b964e8b1fd488025caf2f971f43b00776b332"
+
 # Where the X11 / XIM / ICE / wayland sockets live in our world. Patches
 # substitute @TAWC_TMP_PREFIX@ -> this; the compositor mkdirs it on startup.
 # Each install method's bind config surfaces this dir at /tmp/.X11-unix inside
@@ -509,14 +515,17 @@ stage_libmd() {
     stage_should_run libmd || return 0
     # Provides SHA-1 for Xwayland's MIT-MAGIC-COOKIE generation.
     # Upstream is Hadrons; their tarball is the canonical release.
-    # Tarball, not git — version embedded in the URL, so bumping it
-    # auto-fetches a fresh extract.
+    # Tarball, not git — version and hash are pinned below, so bumping
+    # the version means bumping the hash with it.
     local src="$SRC_ROOT/libmd"
     if [ ! -d "$src" ]; then
-        echo "==> fetch libmd 1.1.0"
+        local tarball="$SRC_ROOT/libmd-$LIBMD_VERSION.tar.xz"
+        dep_fetch_tarball \
+            "https://archive.hadrons.org/software/libmd/libmd-$LIBMD_VERSION.tar.xz" \
+            "$LIBMD_SHA256" "$tarball"
+        echo "==> extracting libmd-$LIBMD_VERSION"
         mkdir -p "$src"
-        curl -fsSL https://archive.hadrons.org/software/libmd/libmd-1.1.0.tar.xz \
-            | tar -xJ -C "$src" --strip-components=1
+        tar -xJf "$tarball" -C "$src" --strip-components=1
     fi
     build_autotools libmd
 }
