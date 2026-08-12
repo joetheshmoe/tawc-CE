@@ -28,6 +28,7 @@ Tess's Android Wayland Compositor (tawc) is an Android app plus rootfs/build scr
 - Use existing scripts instead of one-off adb/chroot commands when possible, if the scripts are broken fix them (or at least open an issue).
 - Only commit, amend, tag, or push when explicitly asked. Git push may hang without user approval.
 - Do not run formatting tools (`cargo fmt`, `rustfmt`, etc.) unless explicitly asked.
+- Do not edit `app/icon.svg` unless explicitly asked — it is the hand-drawn source of truth for the app icon. Every other form of the mark is generated from it by `scripts/gen-icon.sh`; after an asked-for icon change, run that script and commit the SVG plus all four generated files together. See [notes/building.md](notes/building.md) ("App icon").
 - Keep prose, comments, errors, and commit messages short unless extra detail is genuinely useful.
 - Keep production logging sparse. Do not log per-frame work, per-input events, test-only milestones, or high-volume protocol chatter; prefer explicit query/debug surfaces for tests.
 

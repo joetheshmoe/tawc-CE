@@ -565,7 +565,59 @@ normalized. Hard-wrapped prose is reflowed into single paragraphs so
 Android can rewrap it to the screen; blocks that don't look like prose
 stay verbatim and render monospace.
 
-### Store metadata and icon (checked-in assets)
+### App icon (checked-in generated assets)
+
+**`app/icon.svg` is the source of truth.** Every other form of the mark is
+generated from it by `scripts/gen-icon.sh`:
+
+| Generated file | Where it shows up |
+|----------------|-------------------|
+| `app/src/main/res/drawable/ic_launcher_foreground.xml` | foreground layer of the adaptive launcher icon (`mipmap-anydpi-v26/ic_launcher.xml`) — the home screen, the app switcher, and pinned Linux-app shortcuts (`EntryShortcuts` falls back to `R.mipmap.ic_launcher`) |
+| `app/src/main/res/drawable/ic_tawc_logo.xml` | the mark at full size, no safe-zone scale; launcher-row fallback icon for graphical entries with no icon of their own (`LauncherActivity`) |
+| `app/src/main/res/values/icon_colors.xml` | `tawc_icon_bg`, the adaptive icon's background layer |
+| `fastlane/metadata/android/en-US/images/icon.png` | the F-Droid store listing (512×512) |
+
+`mipmap-anydpi-v26/ic_launcher.xml` is hand-written — it only wires the two
+layers together and has no artwork in it.
+
+To change the icon:
+
+1. Edit `app/icon.svg` in Inkscape.
+2. Run `scripts/gen-icon.sh`.
+3. Commit the SVG and all four generated files together.
+
+```bash
+scripts/gen-icon.sh           # regenerate everything
+scripts/gen-icon.sh --check   # verify the checked-in files match the SVG
+scripts/gen-icon.sh --size=N  # store icon at another size
+```
+
+Nothing runs the generator automatically: the app build must not depend on
+an SVG rasteriser, and the icon changes about once a year. `--check` is the
+guard against the checked-in files drifting from the source; it needs no
+rasteriser for the vector outputs.
+
+Constraints on the SVG, all enforced by the script — it fails naming what
+it could not translate rather than quietly dropping it from the icon:
+
+- **Paths only.** The translation to Android's vector format is structural
+  (`pathData` is SVG path syntax), so shapes, strokes and text have to
+  become paths first: in Inkscape, select all, then Path > Object to Path
+  (and Path > Stroke to Path for strokes). Empty text frames left behind by
+  that conversion are ignored.
+- **Flat fills.** No gradients or patterns.
+- **Group transforms** may be translate/scale/rotate, or a matrix with no
+  rotation or skew; each becomes a nested Android `<group>`.
+- **The background colour is the SVG page colour** (Inkscape: Document
+  Properties > Background), not a drawn rectangle — that is what
+  `icon_colors.xml` is generated from.
+
+The safe-zone scale (0.60) lives in the script. Android masks the outer
+edge of an adaptive icon away, so the foreground has to sit inside the
+central safe zone; the store PNG uses the same scale so it matches what
+launchers actually draw.
+
+### Store metadata (checked-in assets)
 
 `fastlane/metadata/android/en-US/` holds the F-Droid store listing in the
 standard fastlane layout — F-Droid reads it straight out of the source
@@ -577,36 +629,12 @@ repo, so it ships by being committed, not by being built:
 | `short_description.txt`           | 80     | one line, shown in listings              |
 | `full_description.txt`            | 4000   | the listing body                         |
 | `changelogs/<versionCode>.txt`    | 500    | one per release; `1.txt` for `v1`        |
-| `images/icon.png`                 | 512×512| generated, see below                     |
+| `images/icon.png`                 | 512×512| generated, see above                     |
 | `images/phoneScreenshots/*.png`   | —      | ordered by filename                      |
 
 Each release needs a new `changelogs/<versionCode>.txt` — that is the only
 recurring F-Droid chore once the recipe is merged (see
 [release.md](release.md)).
-
-The icon is generated rather than drawn:
-
-```bash
-scripts/gen-fastlane-icon.sh          # 512x512 to the default path
-scripts/gen-fastlane-icon.sh --svg-only   # inspect the intermediate SVG
-```
-
-There is no raster launcher icon in the tree — the app ships an adaptive
-icon — so the script builds one from the same two sources the app uses,
-`app/src/main/res/drawable/ic_launcher_foreground.xml` and the
-`tawc_icon_bg` colour in `app/src/main/res/values/icon_colors.xml`. It
-translates the vector drawable to SVG (Android's `pathData` is SVG path
-syntax, so this is structural, not a redraw) and rasterises with
-`rsvg-convert`, `inkscape`, or `magick` — whichever is installed. The
-result is the *unmasked* adaptive icon: full square canvas, background
-colour behind the foreground, no launcher shape applied, matching Android
-Studio's `ic_launcher-playstore.png` convention.
-
-Nothing runs it automatically, and the PNG is checked in. Re-run it and
-commit the result whenever either source file changes. The script errors
-on any vector-drawable feature it doesn't translate (clip paths, unknown
-elements) rather than silently dropping it from the render, so an icon
-redesign that uses more of the format fails loudly.
 
 ## Install and launch
 
