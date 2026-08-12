@@ -1,0 +1,122 @@
+# DRAFT F-Droid build recipe — belongs in a fork of
+# https://gitlab.com/fdroid/fdroiddata as metadata/me.phie.tawc.yml.
+# It lives here so it can be reviewed and revised alongside the code it
+# builds; nothing in this repo reads it.
+#
+# Status: NOT YET TESTED against fdroidserver. Every field below was
+# checked against the current Build Metadata Reference, but the recipe has
+# not been run through `fdroid build -v -l me.phie.tawc` in the buildserver
+# VM/podman image, which is the only thing that settles the host-package
+# list, the scanner exclusions, and the PATH question flagged under
+# `prebuild`. See plans/f-droid.md step 3.2 — do that before opening the
+# merge request.
+#
+# TODO(maintainer): AuthorName is public attribution, so it is left for you
+# to fill in (or delete if you would rather not be listed).
+#
+# This file names the app version in five places, and must be re-synced
+# with app/build.gradle.kts on every version bump for as long as it lives
+# here — `scripts/check-version-sync.sh` enforces that, and
+# notes/release.md's prep steps run it. Once the recipe is merged into
+# fdroiddata, delete this copy: from then on the recipe lives upstream and
+# AutoUpdateMode keeps its version fields current from the `vN` tags, so a
+# copy here could only ever go stale.
+
+Categories:
+  - System
+  - Development
+License: GPL-3.0-only
+SourceCode: https://github.com/wmww/tawc
+IssueTracker: https://github.com/wmww/tawc/issues
+# AuthorName: ...
+
+RepoType: git
+Repo: https://github.com/wmww/tawc.git
+
+Builds:
+  - versionName: '1'
+    versionCode: 1
+    commit: v1
+    subdir: app
+    ndk: 27.2.12479018
+
+    # Host packages for the cross-builds the Gradle build drives:
+    # libhybris (aarch64 glibc cross-toolchain, autotools, wayland-scanner)
+    # and Xwayland plus its ~22 dependencies (meson/ninja, autotools,
+    # xsltproc, python3-libxml2). Rust comes from Debian's rustup package;
+    # if the buildserver image predates it, swap in rustup-init:
+    #   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/r.sh
+    #   RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo sh /tmp/r.sh -y \
+    #     --no-modify-path --profile minimal --default-toolchain none
+    sudo:
+      - apt-get update
+      - apt-get install -y
+          rustup
+          build-essential make pkg-config curl libarchive-tools file
+          meson ninja-build
+          autoconf automake libtool
+          perl python3 python3-libxml2 xsltproc libexpat1-dev
+          libwayland-dev libwayland-bin wayland-protocols
+          libvulkan-dev patchelf
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          binutils-aarch64-linux-gnu libc6-arm64-cross
+          linux-libc-dev-arm64-cross
+
+    # Script entries are joined with `&&`, so the leading `cd` applies to
+    # everything after it — the recipe does not depend on which directory
+    # fdroidserver starts prebuild in.
+    #
+    # rust-toolchain.toml at the repo root pins the compiler version and
+    # every target, so rustup installs exactly what the upstream build
+    # uses without the recipe naming a version. cargo-ndk is a cargo
+    # subcommand and cannot be pinned there; its version is recorded in
+    # notes/building.md.
+    #
+    # Gradle properties go into gradle.properties rather than the
+    # `gradleprops:` field because one of the values contains a comma,
+    # which that field uses as its own separator:
+    #   tawcMethods=tawcroot   only the tawcroot exec backend (skips the
+    #                          proot build and its talloc tarball)
+    #   tawcGraphics=...       libhybris is the production GPU path; cpu is
+    #                          the software fallback. Both are built from
+    #                          source. Omitting gfxstream/libhybris-zink
+    #                          skips the Mesa build, which is the only part
+    #                          of the tree that would download prebuilt
+    #                          distro packages.
+    #
+    # settings.gradle.kts clones the pinned termux-app checkout at
+    # settings-evaluation time (the in-app terminal widget is built from
+    # it); doing it here instead keeps the fetch in the phase where
+    # fetching is expected. Every other pinned dep in deps/deps.list is
+    # cloned on demand by the build script that needs it — only the ones
+    # this configuration actually uses.
+    #
+    # TODO(verify in step 3.2): `cargo install` puts cargo-ndk in
+    # $CARGO_HOME/bin, and the Gradle step runs in a fresh process whose
+    # PATH this script cannot change. If `cargo ndk` is not found during
+    # the build, drop the `gradle:` field and run the build explicitly:
+    #   build:
+    #     - export PATH="$HOME/.cargo/bin:$PATH"
+    #     - ./gradlew :app:assembleRelease
+    prebuild:
+      - cd "$(git rev-parse --show-toplevel)"
+      - printf 'tawcMethods=tawcroot\ntawcGraphics=libhybris,cpu\n' >> gradle.properties
+      - cargo install cargo-ndk --version 4.1.2 --locked
+      - scripts/ensure-deps.sh termux-app
+
+    gradle:
+      - yes
+
+    # TODO(verify in step 3.2): the scanner runs over the working tree,
+    # which by then contains the dep checkouts cloned above and during the
+    # build. Expect to need entries for binaries carried by those upstream
+    # repos (termux-app ships gradle wrappers, for one). Add them only for
+    # what the scanner actually complains about — each one invites a
+    # reviewer question.
+    # scanignore:
+    #   - deps/termux-app
+
+AutoUpdateMode: Version v%v
+UpdateCheckMode: Tags ^v[0-9]+$
+CurrentVersion: '1'
+CurrentVersionCode: 1

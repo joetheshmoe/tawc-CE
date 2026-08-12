@@ -34,7 +34,7 @@ Tess's Android Wayland Compositor (tawc) is an Android app plus rootfs/build scr
 
 ## Releases
 - Full process: [notes/release.md](notes/release.md). Versions are a plain counter (`1`, `2`, …); `versionName` in `app/build.gradle.kts` is the single source, `versionCode` derives from it.
-- When asked to prep a release: bump the version, draft release notes, commit `release: vN`, tag `vN` (no push), then hand off — signing runs as the key-owning user where Claude is unavailable, so end by telling the user to run `scripts/build-release-apk.sh` and the remaining publish steps from the notes.
+- When asked to prep a release: bump the version, draft release notes, write the F-Droid changelog and run `scripts/check-version-sync.sh` (nothing else in the repo should name the version statically), commit `release: vN`, tag `vN` (no push), then hand off — signing runs as the key-owning user where Claude is unavailable, so end by telling the user to run `scripts/build-release-apk.sh` and the remaining publish steps from the notes.
 
 ## Issues
 - Issues live in `issues/`. Do not solve them unless asked or the fix falls out of current work.

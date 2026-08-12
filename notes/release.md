@@ -8,6 +8,19 @@ Releases are signed APKs published as GitHub release assets. No app-store distri
 - `versionName` in `app/build.gradle.kts` is the single source of truth; `versionCode = versionName.toInt()`, so Android's monotonic-versionCode upgrade requirement is satisfied automatically.
 - Each release commit is tagged `vN` (annotated).
 
+Everything else derives the version rather than repeating it: the app reads
+it from `PackageManager` at runtime, and `build-release-apk.sh` reads it
+back out of the built APK with aapt2. Only two things in the repo name a
+version statically, both because their formats demand it:
+
+| File | Why | On bump |
+|------|-----|---------|
+| `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` | F-Droid reads one changelog file per version code | add a new file; old ones stay |
+| `fdroid/me.phie.tawc.yml` | fdroiddata recipe draft — needs a concrete `Builds` entry | re-sync its five version fields, until the recipe is merged upstream and the file is deleted |
+
+`scripts/check-version-sync.sh` verifies both against
+`app/build.gradle.kts`, so a bump cannot silently miss them.
+
 ## Prep steps (agent)
 
 When asked to prep a release:
@@ -26,8 +39,15 @@ When asked to prep a release:
    text must match what the release actually ships — see
    [licensing.md](licensing.md).
 3. Draft release notes from `git log <last-tag>..` (first release: summarize the feature set instead). Keep them user-facing: features, fixes, known limitations.
-4. Commit as `release: vN`, then tag `vN` (the prep request counts as the explicit ask to commit/tag; do not push).
-5. Hand off: print the human steps below with the concrete version filled in, plus the drafted notes (e.g. as a `--notes-file` in scratch or inline for copy/paste).
+4. Write the F-Droid changelog for this release:
+   `fastlane/metadata/android/en-US/changelogs/<N>.txt`, a condensed
+   version of the notes from step 3 (max 500 characters — F-Droid
+   truncates past that). If `fdroid/me.phie.tawc.yml` still exists, re-sync
+   its `versionName`, `versionCode`, `commit`, `CurrentVersion` and
+   `CurrentVersionCode` to this release. Then run
+   `scripts/check-version-sync.sh` and fix anything it reports.
+5. Commit as `release: vN`, then tag `vN` (the prep request counts as the explicit ask to commit/tag; do not push).
+6. Hand off: print the human steps below with the concrete version filled in, plus the drafted notes (e.g. as a `--notes-file` in scratch or inline for copy/paste).
 
 The release build cannot be run by the agent: the signing keystore lives in a different user account where Claude does not run.
 
