@@ -460,10 +460,12 @@ tawcAbis.forEach { abi ->
     }
 
     val buildTask = tasks.register<Exec>("buildRustLibrary$capAbi") {
-        dependsOn(buildLibxkbcommonTask, setupSmithayTask)
-        if (gfxstreamEnabled) {
-            dependsOn(setupRutabagaTask)
-        }
+        // setupRutabaga runs even without gfxstream: cargo resolves
+        // `kumquat_virtio`'s path dep while parsing the manifest, whether or
+        // not the feature that uses it is enabled, so a clone missing
+        // deps/rutabaga_gfx fails before any code is compiled. Only a fresh
+        // checkout hits this — a dev tree already has the dir.
+        dependsOn(buildLibxkbcommonTask, setupSmithayTask, setupRutabagaTask)
         workingDir = file("${rootProject.projectDir}/compositor")
         environment("ANDROID_NDK_HOME", "${android.ndkDirectory}")
         val cargoArgs = mutableListOf(
