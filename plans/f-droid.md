@@ -43,8 +43,8 @@ submit these on their own; agents may prepare inputs only where a step says so.
 
 ## Progress 2026-08-12
 
-Done: steps 1.1, 1.2, 2.1, 3.1. Remaining agent work is the two container
-steps (1.3, 3.2) — everything else is human.
+Done: steps 1.1, 1.2, 2.1, 3.1, 3.2 (which subsumed 1.3 — see below).
+All remaining work is human: steps 2.2, 2.3, 2.4, 3.3 and step 4.
 
 - 1.1 done. `dep_fetch_tarball` in `scripts/lib/deps.sh` downloads and
   sha256-verifies; libmd and talloc pin version+hash in their build
@@ -65,14 +65,48 @@ steps (1.3, 3.2) — everything else is human.
   "Store metadata"); AGENTS.md tells agents not to edit the SVG unasked.
 - 2.2 draft only, per this plan's rule: `fastlane/DRAFTS.md`. Rewrite it
   and delete it.
-- 3.1 done, untested: `fdroid/me.phie.tawc.yml`. Field names checked
-  against the current Build Metadata Reference; `gradleprops` is
+- 3.1 done, and tested by 3.2 below: `fdroid/me.phie.tawc.yml`. Field
+  names checked against the current Build Metadata Reference; `gradleprops` is
   deliberately avoided (it comma-splits, and `tawcGraphics=libhybris,cpu`
   contains a comma) in favour of appending to `gradle.properties`, which
   is verified to feed the build's `findProperty` reads. Two `TODO(verify
-  in step 3.2)` markers flag the parts only a real buildserver run can
-  settle: cargo-ndk's PATH visibility to the Gradle step, and scanner
-  exclusions for the cloned dep trees.
+  in step 3.2)` markers flagged the parts only a real buildserver run
+  could settle: cargo-ndk's PATH visibility to the Gradle step, and
+  scanner exclusions for the cloned dep trees. Both are resolved.
+- 1.3 + 3.2 done. `fdroid build --verbose --test --refresh-scanner
+  --on-server --no-tarball me.phie.tawc:1` produces a 30 MB release APK
+  in `registry.gitlab.com/fdroid/fdroidserver:buildserver-trixie`,
+  driven the way fdroiddata's CI drives it (fdroidserver from master,
+  build as `vagrant`, `gradlew-fdroid`). 3.2 subsumes 1.3: it is the
+  same clean-clone build under stricter conditions. `fdroid lint` is
+  clean and the recipe validates against fdroiddata's metadata schema.
+  What the run changed:
+    - Five host packages were missing from the recipe, each one an
+      Arch-vs-Debian packaging difference that a dev machine hides, and
+      each failing deep inside a cross-build rather than at a preflight
+      check: `bison`, `libtool-bin`, `libltdl-dev`,
+      `libwayland-egl-backend-dev`, and `libx11-dev libx11-xcb-dev
+      libxcb1-dev`. All are in notes/building.md's host-package table
+      now, plus a copy-pasteable apt line — they are general Debian
+      build knowledge, not F-Droid trivia.
+    - A real build bug: `buildRustLibrary` only ensured
+      `deps/rutabaga_gfx` when gfxstream was enabled, but cargo resolves
+      that optional `path` dep whenever it parses the manifest, so any
+      clean clone built without gfxstream failed. Fixed in
+      app/build.gradle.kts.
+    - `AutoUpdateMode: Version v%v` no longer validates against
+      fdroiddata's schema; the current spelling is plain `Version`.
+    - No `scanignore`/`scandelete` is needed: the scanner runs right
+      after prebuild, when `deps/termux-app` is the only checkout on
+      disk. It deletes the gradle wrappers and
+      `gradle/gradle-daemon-jvm.properties` itself, which is expected.
+    - cargo-ndk resolves from `~/.cargo/bin` for the Gradle step, so the
+      `gradle:` field works as-is with no `build:` override.
+  Two things the rig could not test faithfully, both noted in
+  `build/fdroid-test/README.md`: it builds the local tree from a mirror
+  clone rather than GitHub's `v1` tag (which predates all of this work),
+  and `fdroid rewritemeta` will strip the recipe's comments on
+  submission.
 
 ## Step 1 — repo hygiene fixes (agent, in this repo)
 

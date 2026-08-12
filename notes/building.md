@@ -35,7 +35,7 @@ and launch as documented in AGENTS.md's Common Commands.
 | Component | Arch (`pacman -S`)                                     | Debian/Ubuntu (`apt install`)                        |
 |-----------|--------------------------------------------------------|------------------------------------------------------|
 | JDK 21    | `jdk21-openjdk`                                        | `openjdk-21-jdk`                                     |
-| Rust      | `rustup` — the version is pinned by `rust-toolchain.toml` at the repo root (currently 1.93.0), so rustup installs it on first build; no `rustup default` needed | `rustup` (via rustup.rs)                             |
+| Rust      | `rustup` — the version is pinned by `rust-toolchain.toml` at the repo root (currently 1.93.0), so rustup installs it on first build; no `rustup default` needed | `rustup` (a real Debian/Ubuntu package since trixie; rustup.rs works too) |
 | Rust Android targets (`error[E0463]: can't find crate for \`core\`` if missing) | Both Android targets are listed in `rust-toolchain.toml`, so rustup adds them automatically. Manually: `rustup target add aarch64-linux-android` (add `x86_64-linux-android` for emulator builds). The kumquat server is a Cargo dep of the compositor crate (`target_os="android"`-gated), so the same target also covers the gfxstream-bridge build; no extra toolchain. | same |
 | Rust glibc targets (`build-mesa-gfxstream.sh` cross-builds Mesa's gfxstream-vk Rust pieces) | `rustup target add aarch64-unknown-linux-gnu` (and `rustup target add x86_64-unknown-linux-gnu` for the emulator bridge) | same |
 | `bindgen` (Mesa's gfxstream-vk meson Rust bindings) | `cargo install bindgen-cli` | same |
@@ -43,13 +43,42 @@ and launch as documented in AGENTS.md's Common Commands.
 | Android SDK + NDK | install Android Studio, or use `sdkmanager` directly. Android platform API 36 is required by `compileSdk`; NDK version pinned in `app/build.gradle.kts` (currently 27.2.12479018). The SDK's `cmdline-tools` (for `apkanalyzer`, used by `scripts/check-no-dev-code.sh` on the release APK) and `build-tools` (zipalign/apksigner/aapt2) are both needed for `scripts/build-release-apk.sh`. | same |
 | Build basics | `base-devel`                                        | `build-essential pkg-config curl libarchive-tools`   |
 | Meson + Ninja (libxkbcommon) | `meson ninja`                            | `meson ninja-build`                                  |
-| Wayland host tools (libhybris cross-build) | `wayland wayland-protocols` | `libwayland-dev wayland-protocols`                   |
+| `bison` (libxkbcommon's meson build and xkbcomp's `AC_PROG_YACC`) | in `base-devel`         | `bison`                                              |
+| Wayland host tools (libhybris cross-build) | `wayland wayland-protocols` | `libwayland-dev libwayland-egl-backend-dev wayland-protocols` (Arch's `wayland` carries `wayland-egl-backend.h`; Debian splits it out, and libhybris's wayland EGL platform includes it) |
 | Host sysroot + test app builds | `curl libarchive wayland` | `curl libarchive-tools libwayland-dev` |
-| Autotools (libhybris cross-build) | `autoconf automake libtool` | `autoconf automake libtool`                          |
+| Autotools (libhybris cross-build) | `autoconf automake libtool` | `autoconf automake libtool libtool-bin` (Debian ships the `libtool` binary itself in `libtool-bin`, and `build-libhybris.sh`/`build-xwayland.sh` check for it) |
+| `ltdl.m4` autoconf macros (libffi's `LT_SYS_SYMBOL_USCORE`, in the Xwayland dep chain) | in `libtool` | `libltdl-dev`                                        |
 | Vulkan headers (libhybris cross-build) | `vulkan-headers`        | `libvulkan-dev`                                      |
+| X11/xcb headers (libhybris's X11 EGL platform, `eglplatform_x11.so`) | `libx11 libxcb`   | `libx11-dev libx11-xcb-dev libxcb1-dev`              |
 | `patchelf` (libhybris GL shims) | `patchelf`                  | `patchelf`                                           |
 | `file` (libhybris build verify step) | `file`                 | `file`                                               |
 | nginx (dev-time mirror cache, optional) | `nginx`                       | `nginx`                                              |
+
+On a clean Debian trixie the whole set is one line — the same set the
+F-Droid recipe installs, verified by building a release APK from scratch
+in a container with none of it preinstalled:
+
+```bash
+apt install git openjdk-21-jdk rustup build-essential make pkg-config curl \
+    libarchive-tools file meson ninja-build bison autoconf automake libtool \
+    libtool-bin libltdl-dev perl python3 python3-libxml2 xsltproc libexpat1-dev \
+    libwayland-dev libwayland-bin libwayland-egl-backend-dev wayland-protocols \
+    libvulkan-dev patchelf libx11-dev libx11-xcb-dev libxcb1-dev \
+    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu libc6-arm64-cross linux-libc-dev-arm64-cross
+cargo install cargo-ndk --version 4.1.2 --locked
+```
+
+Three of those are easy to miss when the packaging differs from Arch's,
+and each one fails deep into a cross-build rather than up front:
+`bison` and `libtool-bin` (Arch folds both into `base-devel`),
+`libwayland-egl-backend-dev` and `libltdl-dev` (Arch keeps both inside
+`wayland` and `libtool`), and the `-dev` split for X11/xcb, which Arch
+does not have at all.
+
+That line covers the `libhybris,cpu` graphics set. The gfxstream and
+libhybris-zink backends additionally need `bindgen` and the Mesa/sysroot
+tooling described below; `proot` builds its own talloc.
 
 JDK 26 is **not** supported for running this Gradle build — Gradle 8.12's
 embedded Kotlin stack crashes while parsing Java version `26.0.1`. The repo
@@ -407,9 +436,10 @@ and lays down `<filesDir>/xwayland/bin/{Xwayland,xkbcomp}` symlinks
 into `nativeLibraryDir`.
 
 Host packages (in addition to the always-required set above): `perl`
-(needed by xorgproto/libxcb/font-util autotools macros) and expat
+(needed by xorgproto/libxcb/font-util autotools macros), expat
 headers (`expat` / `libexpat1-dev`, for the native wayland-scanner
-below). Everything else (meson, ninja, autoconf, automake, libtool,
+below), and libltdl's autoconf macros (`libtool` / `libltdl-dev`, for
+libffi's `LT_SYS_SYMBOL_USCORE`). Everything else (meson, ninja, autoconf, automake, libtool,
 pkg-config, python3) is already required for libhybris.
 
 The build does **not** use the host's `wayland-scanner`. The
