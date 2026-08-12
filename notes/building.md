@@ -565,6 +565,49 @@ normalized. Hard-wrapped prose is reflowed into single paragraphs so
 Android can rewrap it to the screen; blocks that don't look like prose
 stay verbatim and render monospace.
 
+### Store metadata and icon (checked-in assets)
+
+`fastlane/metadata/android/en-US/` holds the F-Droid store listing in the
+standard fastlane layout — F-Droid reads it straight out of the source
+repo, so it ships by being committed, not by being built:
+
+| File                              | Limit  | Notes                                    |
+|-----------------------------------|--------|------------------------------------------|
+| `title.txt`                       | 50     | keep in sync with the `app_name` string  |
+| `short_description.txt`           | 80     | one line, shown in listings              |
+| `full_description.txt`            | 4000   | the listing body                         |
+| `changelogs/<versionCode>.txt`    | 500    | one per release; `1.txt` for `v1`        |
+| `images/icon.png`                 | 512×512| generated, see below                     |
+| `images/phoneScreenshots/*.png`   | —      | ordered by filename                      |
+
+Each release needs a new `changelogs/<versionCode>.txt` — that is the only
+recurring F-Droid chore once the recipe is merged (see
+[release.md](release.md)).
+
+The icon is generated rather than drawn:
+
+```bash
+scripts/gen-fastlane-icon.sh          # 512x512 to the default path
+scripts/gen-fastlane-icon.sh --svg-only   # inspect the intermediate SVG
+```
+
+There is no raster launcher icon in the tree — the app ships an adaptive
+icon — so the script builds one from the same two sources the app uses,
+`app/src/main/res/drawable/ic_launcher_foreground.xml` and the
+`tawc_icon_bg` colour in `app/src/main/res/values/icon_colors.xml`. It
+translates the vector drawable to SVG (Android's `pathData` is SVG path
+syntax, so this is structural, not a redraw) and rasterises with
+`rsvg-convert`, `inkscape`, or `magick` — whichever is installed. The
+result is the *unmasked* adaptive icon: full square canvas, background
+colour behind the foreground, no launcher shape applied, matching Android
+Studio's `ic_launcher-playstore.png` convention.
+
+Nothing runs it automatically, and the PNG is checked in. Re-run it and
+commit the result whenever either source file changes. The script errors
+on any vector-drawable feature it doesn't translate (clip paths, unknown
+elements) rather than silently dropping it from the render, so an icon
+redesign that uses more of the format fails loudly.
+
 ## Install and launch
 
 ```bash
