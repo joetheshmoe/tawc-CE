@@ -1,0 +1,78 @@
+name: Setup TAWC
+description: Shared JDK 21 + Android SDK/NDK + Rust + cargo-ndk/bindgen + host deps + caches
+runs:
+  using: composite
+  steps:
+    - name: Set up JDK 21
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: 21
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install Android NDK and build-tools
+      shell: bash
+      run: |
+        sdkmanager --install "ndk;27.2.12479018" "build-tools;36.0.0" "platforms;android-36"
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-linux-android,x86_64-linux-android,aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu
+
+    - name: Install Rust targets via rustup (fallback)
+      shell: bash
+      run: |
+        rustup target add aarch64-linux-android x86_64-linux-android || true
+        rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu || true
+
+    - name: Install cargo-ndk and bindgen
+      shell: bash
+      run: |
+        cargo install cargo-ndk --version 4.1.2 --locked || true
+        cargo install bindgen-cli --locked || true
+
+    - name: Install host deps
+      shell: bash
+      run: |
+        for i in 1 2 3 4 5; do sudo apt-get update -o Acquire::Retries=3 && break || { echo "apt update retry $i/5"; sleep 10; }; done
+        sudo apt-get install -y \
+          build-essential make pkg-config curl \
+          libarchive-tools file ninja-build bison autoconf automake libtool \
+          libtool-bin libltdl-dev perl python3 python3-libxml2 xsltproc libexpat1-dev \
+          libwayland-dev libwayland-bin libwayland-egl-backend-dev wayland-protocols \
+          libvulkan-dev patchelf libx11-dev libx11-xcb-dev libxcb1-dev \
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+          libc6-arm64-cross linux-libc-dev-arm64-cross \
+          python3-mako python3-yaml python3-packaging
+        pip install --upgrade --break-system-packages meson mako pyyaml packaging
+
+    - name: Cache Gradle
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          .gradle
+        key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: gradle-${{ runner.os }}-
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin/cargo-ndk
+          ~/.cargo/bin/bindgen
+        key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+        restore-keys: cargo-${{ runner.os }}-
+
+    - name: Cache sysroots
+      uses: actions/cache@v4
+      with:
+        path: build/sysroots
+        key: sysroots-${{ runner.os }}-${{ hashFiles('scripts/build-host-sysroot.sh') }}
+        restore-keys: sysroots-${{ runner.os }}-
