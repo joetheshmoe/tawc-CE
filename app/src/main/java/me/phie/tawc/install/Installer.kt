@@ -109,6 +109,19 @@ class Installer(
         progress: (InstallProgress) -> Unit,
         log: (String) -> Unit,
     ) {
+        // Dev proxy at 127.0.0.1:8080 is optional (scripts/cache-proxy.sh).
+        // If the caller passed a proxy but it isn't listening, fall back
+        // to direct fetches so normal user installs (onboarding,
+        // InstallActivity) don't fail with "Failed to connect to
+        // /127.0.0.1:8080" — the earlier sid failure was exactly this.
+        val effectiveMirrorProxy = when {
+            mirrorProxy == null -> null
+            isProxyReachable(mirrorProxy, log) -> mirrorProxy
+            else -> {
+                log("proxy ${mirrorProxy.base} unreachable, using direct URLs")
+                null
+            }
+        }
         // Stage-boundary cancel gate. `runInterruptible` translates a
         // coroutine cancel into a thread interrupt, but inner blocking
         // calls (PGP digest, tar extract, pacman) are uninterruptible
@@ -125,6 +138,18 @@ class Installer(
 
         val rootfsDir = store.rootfsDir(id)
         val rootfsPath = rootfsDir.absolutePath
+
+        // Resolve the bootstrap descriptor before any disk state is laid
+        // down, so the persisted `sourceUrl` reflects the actual URL and
+        // a resolve failure (e.g. proxy at 127.0.0.1:8080 not running)
+        // aborts without leaving an empty ghost dir that would confuse
+        // the next install attempt (see DebianDockerResolver proxy fallback).
+        val flavor = bootstrapFlavor ?: distro.supportedFlavor
+        val bootstrap = distro.resolveBootstrap(log, effectiveMirrorProxy, flavor)
+        val sourceUrl = when (bootstrap) {
+            is TarballBootstrap -> bootstrap.url
+            is PackageBootstrap -> bootstrap.archiveRoot
+        }
 
         // Lay down the metadata first thing, in INSTALLING. The parent
         // dir is created with app uid (chown-fixed below for chroot)
@@ -147,17 +172,6 @@ class Installer(
         val appVersionCode = try {
             context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
         } catch (_: android.content.pm.PackageManager.NameNotFoundException) { 0L }
-        // Resolve the bootstrap descriptor before writing metadata so
-        // the persisted `sourceUrl` reflects the actual URL the install
-        // ran against (matters for distros with dynamic resolution like
-        // ManjaroArm, where the latest GitHub release tag changes
-        // weekly). Failure here aborts before disk state is laid down.
-        val flavor = bootstrapFlavor ?: distro.supportedFlavor
-        val bootstrap = distro.resolveBootstrap(log, mirrorProxy, flavor)
-        val sourceUrl = when (bootstrap) {
-            is TarballBootstrap -> bootstrap.url
-            is PackageBootstrap -> bootstrap.archiveRoot
-        }
 
         store.save(
             Installation(
@@ -186,10 +200,10 @@ class Installer(
         // rejoin at the flavor-agnostic configure step below.
         when (bootstrap) {
             is TarballBootstrap ->
-                installTarballBootstrap(bootstrap, rootfsPath, ::checkCancel, progress, log)
+                installTarballBootstrap(bootstrap, rootfsPath, ::checkCancel, progress, log, effectiveMirrorProxy)
             is PackageBootstrap ->
                 PackageBootstrapInstaller(
-                    context, store, cache, distro, method, id, bootstrap, mirrorProxy,
+                    context, store, cache, distro, method, id, bootstrap, effectiveMirrorProxy,
                 ).install(::checkCancel, progress, log)
         }
 
@@ -199,7 +213,7 @@ class Installer(
         // live entirely in [InstallationMethod.startInside] now —
         // there's nothing to materialise on disk between calls.
         progress(InstallProgress(InstallStage.CONFIGURING, context.getString(R.string.install_progress_configuring_chroot)))
-        distro.configure(method, rootfsPath, mirrorProxy, log)
+        distro.configure(method, rootfsPath, effectiveMirrorProxy, log)
         // Lay down everything the app ships per-rootfs (libhybris into
         // /usr/lib/hybris, the glvnd vendor JSON, …) as real files via
         // [TawcInstaller]. Must follow distro.configure (which may
@@ -264,13 +278,14 @@ class Installer(
         checkCancel: () -> Unit,
         progress: (InstallProgress) -> Unit,
         log: (String) -> Unit,
+        effectiveMirrorProxy: MirrorProxy? = mirrorProxy,
     ) {
         // Funnel the bootstrap fetch through the dev-time mirror cache
         // when set. The proxy URL is only what the wire request goes to;
         // metadata.json's [Installation.sourceUrl] still records the
         // canonical upstream URL above so the install record reads
         // sensibly across runs with/without the proxy.
-        val effectiveBootstrapUrl = mirrorProxy?.wrap(bootstrap.url) ?: bootstrap.url
+        val effectiveBootstrapUrl = effectiveMirrorProxy?.wrap(bootstrap.url) ?: bootstrap.url
 
         // Stages 1+2: download and integrity-check, with one retry on
         // verify failure. The cached tarball at
@@ -340,14 +355,14 @@ class Installer(
             ))
             log("verify: ${bootstrap.verification::class.simpleName}")
             try {
-                SignatureVerifier.verify(context, cf, bootstrap.verification, mirrorProxy)
+                SignatureVerifier.verify(context, cf, bootstrap.verification, effectiveMirrorProxy)
                 verified = cf
             } catch (e: IOException) {
                 if (attempt >= 1) {
-                    if (mirrorProxy != null) {
+                    if (effectiveMirrorProxy != null) {
                         log(
                             "verify: failed twice through the dev cache proxy at " +
-                                "${mirrorProxy.base} — its cached entries (tarball + " +
+                                "${effectiveMirrorProxy.base} — its cached entries (tarball + " +
                                 "digests) appear out of sync with each other. " +
                                 "Ask the user to clear build/cache-proxy/cache/ and retry.",
                         )
@@ -477,6 +492,34 @@ class Installer(
         AndoBrokers.refresh(context)
 
         progress(InstallProgress(InstallStage.DONE, context.getString(R.string.install_progress_deleted)))
+    }
+
+    private fun isProxyReachable(proxy: MirrorProxy, log: (String) -> Unit): Boolean {
+        return try {
+            val url = java.net.URL(proxy.base)
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 1500
+            conn.readTimeout = 1500
+            conn.requestMethod = "HEAD"
+            conn.instanceFollowRedirects = false
+            val code = conn.responseCode
+            conn.disconnect()
+            // 404 from / or /proxy/ means proxy is up (per cache-proxy.md)
+            // Any response (including 404) means it's reachable. Only
+            // ConnectException / timeout means down.
+            true
+        } catch (e: java.io.IOException) {
+            var c: Throwable? = e
+            while (c != null) {
+                if (c is java.net.ConnectException) return false
+                c = c.cause
+            }
+            // Treat "Connection refused" message as down as well
+            if (e.message?.contains("Connection refused") == true) return false
+            if (e.message?.contains("127.0.0.1:8080") == true) return false
+            // Other IO errors (e.g. 500) mean proxy is up but unhappy — keep it
+            true
+        }
     }
 
 }

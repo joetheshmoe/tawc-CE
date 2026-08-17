@@ -42,7 +42,7 @@ internal object DebianDockerResolver {
         // the tarball are guaranteed to come from the same tree state.
         val commitUrl = "https://api.github.com/repos/$OWNER_REPO/commits/$branch"
         val sha = JSONObject(
-            downloadText(mirrorProxy?.wrap(commitUrl) ?: commitUrl, githubApi = true),
+            downloadTextWithProxyFallback(commitUrl, mirrorProxy, githubApi = true),
         ).optString("sha").lowercase()
         if (sha.length != 40 || !sha.all { it.isDigit() || it in 'a'..'f' }) {
             throw IOException("GitHub commit lookup for $OWNER_REPO@$branch returned no usable sha ('$sha')")
@@ -50,7 +50,7 @@ internal object DebianDockerResolver {
 
         val base = "$RAW_BASE/$sha/$suite/oci/blobs"
         val manifestUrl = "$base/image-manifest.json"
-        val manifest = JSONObject(downloadText(mirrorProxy?.wrap(manifestUrl) ?: manifestUrl))
+        val manifest = JSONObject(downloadTextWithProxyFallback(manifestUrl, mirrorProxy))
         val layers = manifest.getJSONArray("layers")
         if (layers.length() != 1) {
             throw IOException("Debian $suite $bashbrewArch manifest has ${layers.length()} layers, expected 1")
@@ -67,6 +67,41 @@ internal object DebianDockerResolver {
             stripPrefix = null,
             verification = BootstrapVerification.Sha256(digest),
         )
+    }
+
+    private fun downloadTextWithProxyFallback(
+        url: String,
+        mirrorProxy: MirrorProxy?,
+        githubApi: Boolean = false,
+    ): String {
+        val proxied = mirrorProxy?.wrap(url)
+        if (proxied != null && proxied != url) {
+            try {
+                return downloadText(proxied, githubApi)
+            } catch (e: IOException) {
+                // Proxy at 127.0.0.1:8080 is dev-only and may not be running
+                // (scripts/cache-proxy.sh). Fall back to direct fetch so
+                // normal user installs (onboarding, InstallActivity) succeed
+                // without the proxy. The earlier successful broker run
+                // without proxy proved the direct path works.
+                if (isProxyConnectFailure(e)) {
+                    android.util.Log.w("tawc-install", "proxy fetch failed for $url, falling back to direct: ${e.message}")
+                    return downloadText(url, githubApi)
+                }
+                throw e
+            }
+        }
+        return downloadText(url, githubApi)
+    }
+
+    private fun isProxyConnectFailure(e: IOException): Boolean {
+        var c: Throwable? = e
+        while (c != null) {
+            if (c is java.net.ConnectException) return true
+            c = c.cause
+        }
+        // Also treat "Failed to connect to /127.0.0.1:8080" message as proxy failure
+        return e.message?.contains("127.0.0.1:8080") == true
     }
 
     private fun downloadText(url: String, githubApi: Boolean = false): String {
