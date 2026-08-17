@@ -35,7 +35,6 @@ runs:
         cargo install bindgen-cli --locked || true
 
     - name: Install host deps
-      timeout-minutes: 15
       shell: bash
       run: |
         for i in 1 2 3 4 5; do sudo apt-get update -o Acquire::Retries=3 && break || { echo "apt update retry $i/5"; sleep 10; }; done

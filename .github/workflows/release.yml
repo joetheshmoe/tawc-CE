@@ -11,6 +11,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # Only auto-release on pushes to main that actually built; skip PRs
     if: github.ref == 'refs/heads/main'
     steps:
