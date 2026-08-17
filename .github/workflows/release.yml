@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Only auto-release on pushes to main that actually built; skip PRs
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK and build-tools
+        run: |
+          sdkmanager --install "ndk;27.2.12479018" "build-tools;36.0.0" "platforms;android-36"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android,aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu
+
+      - name: Install cargo-ndk and bindgen
+        run: |
+          cargo install cargo-ndk --locked || true
+          cargo install bindgen-cli --locked || true
+
+      - name: Install host deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config curl libarchive-tools \
+            meson ninja-build libwayland-dev wayland-protocols \
+            autoconf automake libtool patchelf file \
+            libvulkan-dev python3-mako python3-yaml \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libc6-arm64-cross linux-libc-dev-arm64-cross
+
+      - name: Resolve version
+        id: version
+        run: |
+          VER=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "tag=v${VER}-r${{ github.run_number }}" >> $GITHUB_OUTPUT
+          echo "apk=tawc-v${VER}-r${{ github.run_number }}.apk" >> $GITHUB_OUTPUT
+          echo "version $VER tag v${VER}-r${{ github.run_number }}"
+
+      - name: Build release APK (unsigned)
+        # Signed releases need Keystore secrets — this builds unsigned
+        # and is safe to publish as a dev/CI artifact. For signed
+        # releases, add KEYSTORE_* secrets and use scripts/build-release-apk.sh
+        run: |
+          ./gradlew :app:assembleRelease --stacktrace
+          ls -lh app/build/outputs/apk/release/
+
+      - name: Prepare artifact
+        run: |
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "${{ steps.version.outputs.apk }}"
+          ls -lh "${{ steps.version.outputs.apk }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: tawc ${{ steps.version.outputs.version }} (r${{ github.run_number }})
+          body: |
+            Auto-release from push to `main` (${{ github.sha }}).
+
+            - Version `${{ steps.version.outputs.version }}` from `app/build.gradle.kts`
+            - Debug signing **not** applied — unsigned `app-release-unsigned.apk` renamed here for convenience. For store-style signed builds, configure `KEYSTORE_*` secrets and switch the build step to `scripts/build-release-apk.sh` (see `notes/release.md`).
+            - Smoke-test on device before promoting: `adb install -r ${{ steps.version.outputs.apk }}` + distro install.
+
+            Full log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: ${{ steps.version.outputs.apk }}
+          draft: false
+          prerelease: true
+          generate_release_notes: true
