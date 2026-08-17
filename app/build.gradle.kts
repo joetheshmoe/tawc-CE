@@ -134,6 +134,12 @@ android {
         }
         getByName("release") {
             manifestPlaceholders["logScreenExported"] = "false"
+            // CI auto-releases use the debug keystore so the APK is
+            // installable (unsigned APKs fail with "package appears to be
+            // invalid"). Prod signed releases still use
+            // scripts/build-release-apk.sh with KEYSTORE_* (notes/release.md).
+            // This fallback only applies when no injected signing props are set.
+            signingConfig = signingConfigs.getByName("debug")
             // Deliberately unminified: R8 would roughly halve the APK
             // (~13 vs ~29 MB, mostly BouncyCastle dex), but obfuscated
             // crash traces need per-release mapping.txt juggling and we

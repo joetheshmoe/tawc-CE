@@ -31,18 +31,26 @@ jobs:
           echo "apk=tawc-v${VER}-r${{ github.run_number }}.apk" >> $GITHUB_OUTPUT
           echo "version $VER tag v${VER}-r${{ github.run_number }}"
 
-      - name: Build release APK (unsigned)
-        # Signed releases need Keystore secrets — this builds unsigned
-        # and is safe to publish as a dev/CI artifact. For signed
-        # releases, add KEYSTORE_* secrets and use scripts/build-release-apk.sh
+      - name: Build release APK
+        # CI now debug-signs release via app/build.gradle.kts fallback
+        # (signingConfig = debug) so the APK is installable. Prod
+        # signed releases still use scripts/build-release-apk.sh with
+        # KEYSTORE_* (notes/release.md).
         run: |
           ./gradlew :app:assembleRelease --stacktrace
           ls -lh app/build/outputs/apk/release/
+          # verify signing (debug keystore)
+          apksigner verify --verbose app/build/outputs/apk/release/app-release.apk || apksigner verify --verbose app/build/outputs/apk/release/app-release-unsigned.apk || true
 
       - name: Prepare artifact
         run: |
-          cp app/build/outputs/apk/release/app-release-unsigned.apk "${{ steps.version.outputs.apk }}"
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk "${{ steps.version.outputs.apk }}"
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk "${{ steps.version.outputs.apk }}"
+          fi
           ls -lh "${{ steps.version.outputs.apk }}"
+          apksigner verify --verbose "${{ steps.version.outputs.apk }}" || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -53,8 +61,8 @@ jobs:
             Auto-release from push to `main` (${{ github.sha }}).
 
             - Version `${{ steps.version.outputs.version }}` from `app/build.gradle.kts`
-            - Debug signing **not** applied — unsigned `app-release-unsigned.apk` renamed here for convenience. For store-style signed builds, configure `KEYSTORE_*` secrets and switch the build step to `scripts/build-release-apk.sh` (see `notes/release.md`).
-            - Smoke-test on device before promoting: `adb install -r ${{ steps.version.outputs.apk }}` + distro install.
+            - Debug-signed `app-release.apk` (installable via `adb install -r`). For prod-signed builds, configure `KEYSTORE_*` secrets and switch to `scripts/build-release-apk.sh` (see `notes/release.md`) — note debug→prod requires uninstall (different key, data loss per notes/release.md:Keystore).
+            - Smoke-test: `adb install -r ${{ steps.version.outputs.apk }}` + distro install.
 
             Full log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           files: ${{ steps.version.outputs.apk }}
