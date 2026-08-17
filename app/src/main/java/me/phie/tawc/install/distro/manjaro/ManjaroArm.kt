@@ -130,7 +130,12 @@ internal object ManjaroArm : Distro {
         log: (String) -> Unit,
     ) = ArchPacmanCommon.configure(method, rootfs, MIRROR_LIST, IGNORED_PACKAGES, mirrorProxy, log)
 
-    override fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
+    override fun initPackageManager(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit,
+    ) =
         // Three keyrings: archlinuxarm (upstream sync), manjaro
         // (Manjaro main x86), manjaro-arm (Manjaro ARM-specific).
         // All shipped in the bootstrap under /usr/share/pacman/keyrings/.
@@ -140,8 +145,13 @@ internal object ManjaroArm : Distro {
             keyring = "archlinuxarm manjaro manjaro-arm",
             archSpecificCruft = ARCH_SPECIFIC_CRUFT,
             log = log,
+            progress = progress,
         )
 
-    override fun installBasePackages(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
-        ArchPacmanCommon.installBasePackages(method, rootfs, basePackages, log)
+    override fun installBasePackages(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit,
+    ) = ArchPacmanCommon.installBasePackages(method, rootfs, basePackages, log, progress)
 }

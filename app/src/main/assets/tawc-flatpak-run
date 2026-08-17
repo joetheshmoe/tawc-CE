@@ -1,0 +1,54 @@
+#!/bin/sh
+# tawc-flatpak-run <app_id> [args...]
+# Launch an unsandboxed Flatpak app: runtime libs on the host glibc, GL via
+# libhybris. See notes/flatpak.md for the two tricks (glibc shadow + EGL shim).
+set -e
+APP_ID="$1"
+[ -z "$APP_ID" ] && { echo "usage: tawc-flatpak-run <app_id> [args...]" >&2; exit 2; }
+shift
+
+FLATPAK="$HOME/.local/share/flatpak"
+APP_ACTIVE=""
+for A in aarch64 x86_64; do
+  P=$(readlink -f "$FLATPAK/app/$APP_ID/$A/stable/active" 2>/dev/null) || continue
+  [ -d "$P" ] && { APP_ACTIVE="$P"; break; }
+done
+[ -z "$APP_ACTIVE" ] && { echo "tawc-flatpak-run: $APP_ID not installed" >&2; exit 1; }
+
+CMD=$(sed -n 's/^command=//p' "$APP_ACTIVE/metadata" | head -n1)
+RT_ID=$(sed -n 's/^runtime=//p' "$APP_ACTIVE/metadata" | head -n1)
+[ -z "$CMD" ] && { echo "tawc-flatpak-run: $APP_ID metadata has no command=" >&2; exit 1; }
+
+ARCH="aarch64"
+case "$APP_ACTIVE" in *"/x86_64/"*) ARCH="x86_64";; esac
+MULTI="$ARCH-linux-gnu"
+APP="$APP_ACTIVE/files"
+RT=""
+[ -n "$RT_ID" ] && RT="$(readlink -f "$FLATPAK/runtime/$RT_ID/active" 2>/dev/null || true)"
+RT="$RT/files"
+
+SH="$HOME/.fp-shadow"
+mkdir -p "$SH"
+GLIBC="libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libresolv.so.2 libutil.so.1 libanl.so.1 libmvec.so.1 libnsl.so.1 libBrokenLocale.so.1 libthread_db.so.1 libcrypt.so.1 libnss_compat.so.2 libnss_dns.so.2 libnss_files.so.2 libnss_hesiod.so.2 libstdc++.so.6 libgcc_s.so.1"
+for l in $GLIBC; do [ -e "/usr/lib/$MULTI/$l" ] && ln -sf "/usr/lib/$MULTI/$l" "$SH/$l"; done
+ln -sf /usr/lib/hybris/libEGL.so.1 "$SH/libEGL.so.1"
+ln -sf /usr/lib/hybris/libEGL.so "$SH/libEGL.so"
+ln -sf /usr/lib/hybris/gl-shims/libGLESv2.so.2 "$SH/libGLESv2.so.2"
+ln -sf /usr/lib/hybris/gl-shims/libGL.so.1 "$SH/libGL.so.1"
+
+# Flatpak builds bake RUNPATHs against /app (the app prefix). Expose it so
+# private libs in $APP/lib/<subdir> (e.g. gedit's lib/gedit/libgedit-50.so)
+# resolve without flatpak's mount namespace.
+rm -f /app
+ln -s "$APP" /app
+
+export LD_LIBRARY_PATH="$SH:$APP/lib:$APP/lib/$MULTI:$RT/lib/$MULTI:$RT/lib:$LD_LIBRARY_PATH"
+export PATH="$APP/bin:$RT/bin:$PATH"
+export XDG_DATA_DIRS="$APP/share:$RT/share:/usr/local/share:/usr/share"
+export GSETTINGS_SCHEMA_DIR="$RT/share/glib-2.0/schemas"
+export GIO_EXTRA_MODULES="$RT/lib/gio/modules"
+export XDG_CONFIG_HOME="$HOME/.config"
+export HYBRIS_EGLPLATFORM=wayland
+export GDK_GL=gles:always
+
+exec "$APP/bin/$CMD" "$@"

@@ -23,6 +23,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 - [rootfs-sessions.md](rootfs-sessions.md) - session invariant for rootfs entry paths.
 - [log-screen.md](log-screen.md) - shared operation/log-screen UI abstraction.
 - [launcher.md](launcher.md) - distro launcher and `.desktop` scanner.
+- [de-desktops.md](de-desktops.md) - running full desktop environments: known-DE table, orientation forcing, SCM_CREDENTIALS fix, per-DE status.
 - [terminal.md](terminal.md) - in-app per-distro terminal (vendored termux terminal modules, tawcroot pty spawn path).
 - [multi-activity.md](multi-activity.md) - one-Android-task-per-window design and implementation notes.
 - [task-icons-window-index.md](task-icons-window-index.md) - task recents icons/labels and Kotlin open-window metadata mirror.
@@ -42,6 +43,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 - [text-input.md](text-input.md) - Android IME to `zwp_text_input_v3` bridge.
 - [clipboard.md](clipboard.md) - Android/Wayland clipboard bridge: announce-only syncs, paste-time fetch, eager client mirror.
 - [firefox.md](firefox.md) - Firefox setup, libhybris fixes, browser-specific issues.
+- [flatpak.md](flatpak.md) - Flatpak apps: unsandboxed-run model, glibc-shadow + libhybris-GL launcher, caveats.
 
 ## Rootfs Methods And Distros
 

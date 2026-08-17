@@ -1,6 +1,7 @@
 package me.phie.tawc.install
 
 import android.content.Context
+import android.os.SystemClock
 import me.phie.tawc.AndoBrokers
 import me.phie.tawc.R
 import me.phie.tawc.install.distro.BootstrapFlavor
@@ -96,6 +97,12 @@ class Installer(
      * uninstall path never reads this.
      */
     private val bootstrapFlavor: BootstrapFlavor? = null,
+    /**
+     * Optional desktop environments the user ticked at install time
+     * (see [DesktopOptions]). Installed after the base package set via
+     * [Distro.installExtraPackages]; empty = bare install.
+     */
+    private val desktopOptions: List<DesktopOption> = emptyList(),
 ) {
     /** Throws on failure. Reports progress + log lines via the callbacks. */
     fun install(
@@ -210,7 +217,7 @@ class Installer(
         // wraps it as FAILED and the only recovery is uninstall +
         // install again.
         progress(InstallProgress(InstallStage.PKG_KEYRING, context.getString(R.string.install_progress_initializing_package_manager)))
-        distro.initPackageManager(method, rootfsPath, log)
+        distro.initPackageManager(method, rootfsPath, log, progress)
 
         checkCancel()
         // Stage 5: install base packages.
@@ -218,7 +225,27 @@ class Installer(
             InstallStage.PKG_INSTALL,
             context.getString(R.string.install_progress_installing_base_packages),
         ))
-        distro.installBasePackages(method, rootfsPath, log)
+        distro.installBasePackages(method, rootfsPath, log, progress)
+
+        // Stage 5b: optional user-selected desktop environments. Only
+        // runs when the user ticked checkboxes at install time; a bare
+        // install skips straight to READY.
+        if (desktopOptions.isNotEmpty()) {
+            checkCancel()
+            val packages = DesktopOptions.packagesFor(desktopOptions)
+            val setup = DesktopOptions.setupScriptFor(desktopOptions)
+            if (packages.isNotEmpty() || setup.isNotBlank()) {
+                log("[install] extra packages: " + packages.joinToString(" "))
+                progress(InstallProgress(
+                    InstallStage.EXTRA_PACKAGES,
+                    context.getString(
+                        R.string.install_progress_installing_desktops,
+                        desktopOptions.joinToString { it.label },
+                    ),
+                ))
+                distro.installExtraPackages(packages, setup, method, rootfsPath, log, progress)
+            }
+        }
 
         // All stages succeeded — flip to READY. From this point the
         // gate refuses install and only allows uninstall.
@@ -267,21 +294,33 @@ class Installer(
                 context.getString(R.string.install_progress_downloading_arch_bootstrap, distro.linuxArch),
             ))
             log("download: $effectiveBootstrapUrl" + if (attempt > 0) " (retry $attempt)" else "")
+            var lastRead = 0L
+            var lastSample = 0L
+            var speedBps = 0L
             val cf = cache.download(
                 distro.cacheKey,
                 effectiveBootstrapUrl,
                 bootstrap.format,
             ) { read, total ->
+                val now = SystemClock.elapsedRealtime()
+                if (lastSample != 0L && now > lastSample) {
+                    val inst = (read - lastRead) * 1000 / (now - lastSample)
+                    speedBps = if (speedBps == 0L) inst else (speedBps * 3 + inst) / 4
+                }
+                lastRead = read
+                lastSample = now
                 val pct = total?.let { ((read * 100) / it).toInt().coerceIn(0, 100) }
                 val totalLabel = total?.let { HumanSize.format(it) }
                     ?: context.getString(R.string.distro_info_unknown)
+                val base = context.getString(
+                    R.string.install_progress_downloading_bootstrap,
+                    HumanSize.format(read),
+                    totalLabel,
+                )
+                val speedText = if (speedBps > 0) "${HumanSize.format(speedBps)}/s" else null
                 progress(InstallProgress(
                     InstallStage.DOWNLOADING,
-                    context.getString(
-                        R.string.install_progress_downloading_bootstrap,
-                        HumanSize.format(read),
-                        totalLabel,
-                    ),
+                    if (speedText != null) "$base · $speedText" else base,
                     pct,
                 ))
             }
@@ -341,6 +380,65 @@ class Installer(
         ) { line ->
             log("tar: $line")
         }
+    }
+
+    /**
+     * Install a set of extra packages (from [PackageStore]) into an
+     * already-READY install — the standalone "app store" path, distinct
+     * from [install]'s DE step which runs during the initial install.
+     * The distro + method were resolved from metadata by the caller
+     * ([InstallationService.startInstallPackages]). Throws on failure.
+     */
+    fun installPackages(
+        packages: List<String>,
+        progress: (InstallProgress) -> Unit,
+        log: (String) -> Unit,
+    ) {
+        val rootfsPath = store.rootfsDir(id).absolutePath
+        distro.installExtraPackages(packages, "", method, rootfsPath, log, progress)
+        progress(InstallProgress(InstallStage.DONE, context.getString(R.string.install_progress_installed)))
+    }
+
+    /**
+     * Install a Flatpak app (from the store) into an already-READY
+     * install. Runs [FlatpakInstaller.installScript] inside the rootfs
+     * (self-contained: ensures `flatpak`, adds the Flathub remote,
+     * installs the app), then writes the launcher `.desktop` entry.
+     * Throws on failure. See [FlatpakInstaller] / notes/flatpak.md.
+     */
+    fun installFlatpak(
+        appId: String,
+        name: String,
+        progress: (InstallProgress) -> Unit,
+        log: (String) -> Unit,
+    ) {
+        val rootfsPath = store.rootfsDir(id).absolutePath
+        log("installing flatpak app $appId")
+        val parser = PackageProgressParser(
+            downloadLabel = "Downloading $name",
+            configureLabel = "Installing $name",
+        )
+        val result = method.runInside(
+            rootfsPath,
+            FlatpakInstaller.installScript(appId),
+            onLine = { line ->
+                log(line)
+                parser.feed(line)?.let { tick ->
+                    progress(InstallProgress(InstallStage.EXTRA_PACKAGES, tick.message, tick.percent))
+                }
+            },
+        )
+        if (!result.ok) {
+            throw IOException("flatpak install failed (exit ${result.exitCode}):\n${tailOf(result.output)}")
+        }
+        FlatpakInstaller.writeDesktopEntry(rootfsPath, appId, name)
+        progress(InstallProgress(InstallStage.DONE, context.getString(R.string.install_progress_installed)))
+    }
+
+    /** Last few lines of a command's captured output, for error messages. */
+    private fun tailOf(output: String, maxLines: Int = 12): String {
+        val lines = output.lineSequence().filter { it.isNotBlank() }.toList()
+        return lines.takeLast(maxLines).joinToString("\n")
     }
 
     /**

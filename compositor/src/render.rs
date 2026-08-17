@@ -23,6 +23,7 @@ use smithay::backend::renderer::element::{
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, WaylandSurfaceTexture,
 };
+use smithay::backend::renderer::element::AsRenderElements;
 use smithay::backend::renderer::{buffer_type, Bind, BufferType, Color32F, Frame, Renderer};
 use smithay::backend::renderer::utils::{
     draw_render_elements, CommitCounter, DamageSet, OpaqueRegions,
@@ -452,6 +453,47 @@ fn collect_wayland_render_elements<'a>(
         .collect()
 }
 
+/// Render elements for the layer surfaces on [above]'s side of the
+/// window stack: Background/Bottom when `above == false`, Top/Overlay
+/// when `above == true`. Each surface is drawn at the location the
+/// LayerMap arranged for it (logical → physical via the output scale).
+fn collect_layer_render_elements<'a>(
+    renderer: &mut GlesRenderer,
+    layers: &[(smithay::desktop::LayerSurface, smithay::utils::Point<i32, smithay::utils::Logical>)],
+    scale: OutputScale,
+    plain_shader: Option<&'a GlesTexProgram>,
+    tint_shader: Option<&'a GlesTexProgram>,
+    tint_enabled: bool,
+    above: bool,
+) -> Vec<TawcWaylandRenderElement<'a>> {
+    use smithay::wayland::shell::wlr_layer::Layer;
+
+    let mut out = Vec::new();
+    let sx = scale.fractional();
+    for (layer, loc) in layers {
+        let is_above = matches!(layer.layer(), Layer::Top | Layer::Overlay);
+        if is_above != above {
+            continue;
+        }
+        let physical = smithay::utils::Point::from((
+            ((loc.x as f64) * sx).round() as i32,
+            ((loc.y as f64) * sx).round() as i32,
+        ));
+        // The desktop LayerSurface's render_elements walks the layer
+        // surface plus its popups (whisker menu etc.).
+        let elems = layer.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+            renderer,
+            physical,
+            Scale::from(sx),
+            1.0,
+        );
+        for e in elems {
+            out.push(wrap_wayland_render_element(e, plain_shader, tint_shader, tint_enabled));
+        }
+    }
+    out
+}
+
 fn draw_wayland_elements(
     elements: &[TawcWaylandRenderElement<'_>],
     frame: &mut GlesFrame<'_, '_>,
@@ -487,6 +529,10 @@ pub fn render_frame(
     let screen_h = output_size.h;
     let region = Rectangle::from_size(Size::from(host.logical_size));
 
+    // Snapshot the layer surfaces up front — their collection borrows
+    // `state` whole while the renderer borrow below holds `state.render`.
+    let layers = crate::compositor::mapped_layers(state);
+
     let render = &mut state.render;
     let plain_shader = render.plain_shader.as_ref();
     let tint_shader = render.tint_shader.as_ref();
@@ -507,6 +553,28 @@ pub fn render_frame(
         tint_enabled,
     );
 
+    // Layer-shell surfaces: Background/Bottom render below windows,
+    // Top/Overlay above. The LayerMap has already arranged their
+    // geometry (panels are full-width bars at the anchored edge).
+    let below_layers = collect_layer_render_elements(
+        &mut render.renderer,
+        &layers,
+        scale,
+        plain_shader,
+        tint_shader,
+        tint_enabled,
+        /*above=*/ false,
+    );
+    let above_layers = collect_layer_render_elements(
+        &mut render.renderer,
+        &layers,
+        scale,
+        plain_shader,
+        tint_shader,
+        tint_enabled,
+        /*above=*/ true,
+    );
+
     let mut target = render.renderer.bind(egl_surface)?;
     let mut frame = render
         .renderer
@@ -516,7 +584,9 @@ pub fn render_frame(
     // of the app (home / install / distro-info screens).
     frame.clear(BACKGROUND_COLOR, &[Rectangle::from_size(output_size)])?;
 
+    draw_wayland_elements(&below_layers, &mut frame, scale, screen_w, screen_h)?;
     draw_wayland_elements(&elements, &mut frame, scale, screen_w, screen_h)?;
+    draw_wayland_elements(&above_layers, &mut frame, scale, screen_w, screen_h)?;
 
     let _ = frame.finish()?;
     drop(target);
@@ -541,6 +611,19 @@ pub fn send_frame_callbacks(state: &TawcState, time: u32) {
 
     for window in visible_space.elements() {
         window.send_frame(
+            output,
+            time,
+            None,
+            |_: &WlSurface, _: &smithay::wayland::compositor::SurfaceData| {
+                Some(output.clone())
+            },
+        );
+    }
+
+    // Layer surfaces (panels) get frame callbacks too, else GTK panels
+    // stall their animations and stop repainting.
+    for (layer, _loc) in crate::compositor::mapped_layers(state) {
+        layer.send_frame(
             output,
             time,
             None,

@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name" translatable="false">TAWC</string>
+    <string name="home_subtitle">Run Linux programs on your phone</string>
+    <string name="launcher_pin_hint">Tip: long-press an app to pin it to your home screen.</string>
 
     <string name="title_install">Install</string>
     <string name="title_install_distro">Install distro</string>
@@ -146,6 +148,9 @@
     <string name="launcher_action_unhide">Unhide</string>
     <string name="launcher_action_edit">Edit</string>
     <string name="launcher_action_add_home">Add to home screen</string>
+    <string name="launcher_action_orientation_landscape">Force landscape</string>
+    <string name="launcher_action_orientation_portrait">Force portrait</string>
+    <string name="launcher_action_orientation_system">Follow system</string>
     <string name="shortcut_pin_unsupported">This launcher does not support pinned shortcuts.</string>
     <string name="shortcut_pin_updated">Updated the existing home-screen shortcut.</string>
     <string name="shortcut_install_not_ready">Installation is %1$s.</string>
@@ -167,6 +172,8 @@
     <string name="editor_load_failed">Couldn\'t read the file: %1$s</string>
     <string name="editor_delete_failed">Delete failed.</string>
     <string name="launcher_launch_failed_title">Launching %1$s failed</string>
+    <string name="launcher_exited_with_code">It exited with code %1$d.</string>
+    <string name="launcher_no_window_opened">It ran but never opened a window.</string>
 
     <string name="operation_not_in_flight">No operation in flight for \'%1$s\'.</string>
     <string name="operation_channel_name">Operations</string>
@@ -222,7 +229,48 @@
     <string name="install_progress_configuring_chroot">Configuring chroot&#8230;</string>
     <string name="install_progress_initializing_package_manager">Initializing package manager&#8230;</string>
     <string name="install_progress_installing_base_packages">Installing base packages&#8230;</string>
+    <string name="install_progress_installing_desktops">Installing %1$s&#8230;</string>
     <string name="install_progress_installed">Installed</string>
+    <string name="install_desktops_label">Desktop environments (optional)</string>
+    <string name="install_desktops_hint">Choose what you want to run. You can add or remove these anytime from the distro\'s terminal.</string>
+    <string name="install_desktops_none_hint">You\'ll get the Linux terminal and whatever you install later.</string>
+    <string name="install_desktops_selected_hint">You\'ll get the terminal plus: %1$s.</string>
+    <string name="install_reject_desktops_unsupported">%1$s can\'t install desktop environments at install time — leave them unticked and add packages from its terminal instead.</string>
+    <string name="operation_title_install_packages">Install packages · %1$s</string>
+    <string name="store_no_install">No installation named \'%1$s\'.</string>
+    <string name="store_not_ready">Installation is %1$s — wait for it to finish first.</string>
+    <string name="title_app_store">App store</string>
+    <string name="store_section_apps">Apps</string>
+    <string name="store_section_tools">Tools &amp; emulators</string>
+    <string name="store_button_install">Install</string>
+    <string name="store_button_installed">Installed</string>
+    <string name="store_no_distro_hint">Install a distro first, then come back here to add software.</string>
+    <string name="store_target_hint">Installing into %1$s</string>
+    <string name="title_flatpak_store">Flatpak apps</string>
+    <string name="flatpak_load_catalog">Load Flathub catalog</string>
+    <string name="flatpak_search_hint">Search Flathub</string>
+    <string name="flatpak_empty">Nothing here yet. Load the catalog or search for an app above.</string>
+    <string name="flatpak_loading">Loading…</string>
+    <string name="flatpak_load_failed">Couldn\u2019t load the catalog. Check your connection and try again.</string>
+    <string name="flatpak_open">Open</string>
+    <string name="onboarding_welcome_title">Run Linux apps on Android</string>
+    <string name="onboarding_welcome_desc">Install Linux programs, run desktop apps and games, and launch them straight from your Android home screen.</string>
+    <string name="onboarding_get_started">Get started</string>
+    <string name="onboarding_skip">Skip</string>
+    <string name="onboarding_pick_distro_title">Pick a distro</string>
+    <string name="onboarding_distro_recommend">Not sure? We recommend Debian.</string>
+    <string name="onboarding_next">Next</string>
+    <string name="onboarding_create_title">Create your Linux environment</string>
+    <string name="onboarding_xfce">XFCE desktop</string>
+    <string name="onboarding_xfce_desc">A familiar desktop with apps and a panel. Leave it off for just the terminal.</string>
+    <string name="onboarding_apps_hint">Add Firefox, GIMP, LibreOffice and more anytime from the app store.</string>
+    <string name="onboarding_homescreen_hint">Long-press any app to pin it to your home screen.</string>
+    <string name="onboarding_create_button">Create environment</string>
+    <string name="onboarding_congrats_title">You\'re all set!</string>
+    <string name="onboarding_congrats_desc">Your Linux environment is being created — this takes a few minutes while it downloads and sets up.</string>
+    <string name="onboarding_view_progress">View progress</string>
+    <string name="onboarding_start">Start using</string>
+    <string name="onboarding_back">Back</string>
     <string name="install_progress_nothing_to_delete">Nothing to delete</string>
     <string name="install_progress_unmounting_chroot">Unmounting chroot&#8230;</string>
     <string name="install_progress_deleting_rootfs">Deleting rootfs&#8230;</string>

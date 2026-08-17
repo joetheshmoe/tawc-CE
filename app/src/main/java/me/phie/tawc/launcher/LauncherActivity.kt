@@ -155,6 +155,19 @@ class LauncherActivity : AppCompatActivity() {
             verticalLp(MATCH_PARENT, WRAP_CONTENT),
         )
 
+        // Quiet discoverability hint: pinning to the home screen is the
+        // launcher's marquee feature, and it only lives behind a
+        // long-press nobody guesses on first use.
+        content.addView(
+            TextView(this).apply {
+                text = getString(R.string.launcher_pin_hint)
+                textSize = 12f
+                alpha = 0.65f
+                setPadding(0, (4 * resources.displayMetrics.density).toInt(), 0, 0)
+            },
+            verticalLp(MATCH_PARENT, WRAP_CONTENT),
+        )
+
         emptyView = TextView(this).apply {
             text = getString(R.string.launcher_loading_apps)
             textSize = 14f
@@ -353,6 +366,7 @@ class LauncherActivity : AppCompatActivity() {
 
     private fun entryActionsFor(entry: LauncherEntry): List<EntryAction> {
         val hidden = entry.id in hiddenIds()
+        val currentOrientation = installation?.desktopOrientations?.get(entry.id) ?: entry.orientation
         return listOfNotNull(
             if (hidden) {
                 EntryAction(getString(R.string.launcher_action_unhide)) { setEntryHidden(entry, false) }
@@ -367,7 +381,33 @@ class LauncherActivity : AppCompatActivity() {
                     canEditEntries() &&
                         DesktopEntryFile.isManaged(entry.path, store.rootfsDir(installationId))
                 },
+            orientationAction(entry, "landscape", currentOrientation, R.string.launcher_action_orientation_landscape),
+            orientationAction(entry, "portrait", currentOrientation, R.string.launcher_action_orientation_portrait),
+            orientationAction(entry, "system", currentOrientation, R.string.launcher_action_orientation_system),
         )
+    }
+
+    /**
+     * One orientation menu item for [entry]: force landscape / force
+     * portrait / follow system. The effective choice is marked with a
+     * check; the user override is persisted per-install
+     * ([Installation.withEntryOrientation]), and "Follow system"
+     * clears it — that's the "disable the force" path for entries whose
+     * `.desktop` file declares `X-Tawc-Orientation`.
+     */
+    private fun orientationAction(
+        entry: LauncherEntry,
+        value: String,
+        current: String,
+        labelRes: Int,
+    ): EntryAction {
+        val checked = current == value
+        val label = (if (checked) "✓ " else "") + getString(labelRes)
+        return EntryAction(label) {
+            val inst = installation ?: return@EntryAction
+            store.update(inst.id) { it.withEntryOrientation(entry.id, value) }
+                ?.let { installation = it }
+        }
     }
 
     private fun showEntryMenu(entry: LauncherEntry) {

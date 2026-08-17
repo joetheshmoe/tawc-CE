@@ -6,6 +6,7 @@
 //! See `notes/multi-activity.md` for the full design.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 
 use log::info;
@@ -196,6 +197,12 @@ pub enum SurfaceEvent {
     },
     /// Test hook: ask every attached client window to close.
     CloseAllClientsForTest { response: mpsc::Sender<usize> },
+    /// A desktop-environment launch started/ended. While active, all new
+    /// toplevels collapse onto the first host so a DE session's windows
+    /// (desktop, panel, apps) share one Android task instead of spawning
+    /// one per window. Driven by EntryLauncher for `tawc-de-*` entries;
+    /// see notes/de-desktops.md.
+    DesktopSessionChanged { active: bool },
 }
 
 // SAFETY: `native_window` is stored as `usize` to keep `SurfaceEvent: Send`;
@@ -204,10 +211,25 @@ pub enum SurfaceEvent {
 
 static SURFACE_EVENT_SENDER: OnceLock<Mutex<Option<Sender<SurfaceEvent>>>> = OnceLock::new();
 
+/// Sticky desktop-environment-session flag. Written from JNI before the
+/// compositor is running (EntryLauncher sets it ahead of `runInside`
+/// starting the compositor), so the SurfaceEvent path alone would drop
+/// it — `send_surface_event` returns false with no running loop. The
+/// event-loop start reads this to seed `TawcState::single_activity_mode`.
+pub fn set_desktop_session(active: bool) {
+    DESKTOP_SESSION.store(active, Ordering::Relaxed);
+}
+
+/// Current desktop-session flag; see [set_desktop_session].
+pub fn desktop_session() -> bool {
+    DESKTOP_SESSION.load(Ordering::Relaxed)
+}
+
+static DESKTOP_SESSION: AtomicBool = AtomicBool::new(false);
+
 /// Replace the sender used by `send_surface_event`. Called once per
 /// compositor startup from `event_loop::run`.
-pub fn set_surface_event_sender(sender: Sender<SurfaceEvent>) {
-    let cell = SURFACE_EVENT_SENDER.get_or_init(|| Mutex::new(None));
+pub fn set_surface_event_sender(sender: Sender<SurfaceEvent>) {    let cell = SURFACE_EVENT_SENDER.get_or_init(|| Mutex::new(None));
     *cell.lock().unwrap() = Some(sender);
 }
 

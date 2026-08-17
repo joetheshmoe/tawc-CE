@@ -18,6 +18,7 @@ import org.json.JSONObject
  * |--------|------|--------|
  * | `launcher-list` | `installId`, optional `showHidden` ∈ true|false | print the launcher entry list as a JSON array on stdout |
  * | `set-entry-hidden` | `installId`, `entryId`, `hidden` ∈ true|false | persist hide/unhide through the same metadata write the UI uses |
+ * | `launch-entry` | `installId`, `entryId` | launch the entry through the same [EntryLauncher] dispatch the UI uses (orientation + desktop-session hooks included); prints `launched` |
  *
  * `launcher-list` mirrors what [LauncherActivity] renders: hidden
  * entries are filtered out unless `showHidden=true` (the UI's
@@ -29,6 +30,7 @@ internal object LauncherActions {
     fun registerAll() {
         ActionRegistry.register("launcher-list", LauncherListAction)
         ActionRegistry.register("set-entry-hidden", SetEntryHiddenAction)
+        ActionRegistry.register("launch-entry", LaunchEntryAction)
     }
 
     private object LauncherListAction : BrokerAction {
@@ -83,5 +85,25 @@ internal object LauncherActions {
     private fun ActionContext.fail(msg: String): Int {
         err(msg)
         return 2
+    }
+
+    private object LaunchEntryAction : BrokerAction {
+        override fun run(args: Map<String, String>, ctx: ActionContext): Int {
+            val id = args["installId"]
+                ?: return ctx.fail("launch-entry: --arg installId=<id> required")
+            val entryId = args["entryId"]
+                ?: return ctx.fail("launch-entry: --arg entryId=<id> required")
+            val store = InstallationStore(ctx.appContext)
+            val inst = store.load(id)
+                ?: return ctx.fail("launch-entry: no installation '$id'")
+            val rootfs = store.rootfsDir(id).absolutePath
+            val entry = LauncherEntry.scan(rootfs).firstOrNull { it.id == entryId }
+                ?: return ctx.fail("launch-entry: no entry '$entryId' in installation '$id'")
+            // Same dispatch the launcher row tap uses — orientation
+            // force and desktop-session single-host both live here.
+            EntryLauncher.launch(ctx.appContext, inst, entry)
+            ctx.out("launched")
+            return 0
+        }
     }
 }

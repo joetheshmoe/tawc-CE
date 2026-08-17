@@ -108,15 +108,24 @@ internal object ArchLinuxArm : Distro {
         log: (String) -> Unit,
     ) = ArchPacmanCommon.configure(method, rootfs, MIRROR_LIST, IGNORED_PACKAGES, mirrorProxy, log)
 
-    override fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
-        ArchPacmanCommon.initPackageManager(
-            method,
-            rootfs,
-            keyring = "archlinuxarm",
-            archSpecificCruft = ARCH_SPECIFIC_CRUFT,
-            log = log,
-        )
+    override fun initPackageManager(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit,
+    ) = ArchPacmanCommon.initPackageManager(
+        method,
+        rootfs,
+        keyring = "archlinuxarm",
+        archSpecificCruft = ARCH_SPECIFIC_CRUFT,
+        log = log,
+        progress = progress,
+    )
 
-    override fun installBasePackages(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
-        ArchPacmanCommon.installBasePackages(method, rootfs, basePackages, log)
+    override fun installBasePackages(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit,
+    ) = ArchPacmanCommon.installBasePackages(method, rootfs, basePackages, log, progress)
 }

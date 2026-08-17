@@ -1,7 +1,10 @@
 package me.phie.tawc.install.distro.arch
 
+import me.phie.tawc.install.InstallProgress
+import me.phie.tawc.install.InstallStage
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
+import me.phie.tawc.install.PackageProgressParser
 import me.phie.tawc.install.ShellDefaults
 import java.io.IOException
 
@@ -476,9 +479,15 @@ PACMAN_EOF
         keyring: String,
         archSpecificCruft: List<String>,
         log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit = {},
     ) {
         val cruft = (archSpecificCruft + SHARED_CRUFT_PACKAGES).joinToString(" ")
         val pacmanKeyBlock = "pacman-key --init\n            pacman-key --populate $keyring"
+        val parser = PackageProgressParser(
+            downloadLabel = "Initializing keyring",
+            syncLabel = "Initializing keyring",
+            configureLabel = "Removing cruft",
+        )
         val res = method.runInside(
             rootfs,
             """
@@ -500,7 +509,7 @@ PACMAN_EOF
                 pacman -Rdd --noconfirm --noscriptlet ${'$'}installed
             fi
             """.trimIndent(),
-            onLine = { log("pacman-key: $it") },
+            onLine = lineSink(InstallStage.PKG_KEYRING, parser, { log("pacman-key: $it") }, progress),
         )
         if (!res.ok) {
             throw IOException("pacman-key init / cruft removal failed (exit=${res.exitCode})")
@@ -541,7 +550,13 @@ PACMAN_EOF
         rootfs: String,
         packages: List<String>,
         log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit = {},
     ) {
+        val parser = PackageProgressParser(
+            syncLabel = "Synchronizing databases",
+            downloadLabel = "Downloading packages",
+            configureLabel = "Installing packages",
+        )
         val res = method.runInside(
             rootfs,
             """
@@ -549,10 +564,28 @@ PACMAN_EOF
             set -e
             pacman -Syyu --needed --noconfirm ${packages.joinToString(" ")}
             """.trimIndent(),
-            onLine = { log("pacman: $it") },
+            onLine = lineSink(InstallStage.PKG_INSTALL, parser, { log("pacman: $it") }, progress),
         )
         if (!res.ok) {
             throw IOException("pacman -Syyu --needed install failed (exit=${res.exitCode})")
+        }
+    }
+
+    /**
+     * Feed every line to [parser] for structured progress while routing a
+     * filtered stream to [log] — the pacman progress lines that reach a
+     * pipe are the `:: Phase` banners, which the parser turns into status
+     * changes but which we don't want doubling up in the install log.
+     */
+    private fun lineSink(
+        stage: InstallStage,
+        parser: PackageProgressParser,
+        log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit,
+    ): (String) -> Unit = { line ->
+        log(line)
+        parser.feed(line)?.let { tick ->
+            progress(InstallProgress(stage, tick.message, tick.percent))
         }
     }
 

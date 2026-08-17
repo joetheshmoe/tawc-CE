@@ -183,11 +183,15 @@ class InstallationService : Service() {
         val anchorOpId = when (intent?.action) {
             ACTION_INSTALL -> "install:$rawId"
             ACTION_UNINSTALL -> "uninstall:$rawId"
+            ACTION_INSTALL_PACKAGES -> "install-packages:$rawId"
+            ACTION_INSTALL_FLATPAK -> "install-flatpak:$rawId"
             else -> "tawc:installation"
         }
         val anchorTitle = when (intent?.action) {
             ACTION_INSTALL -> getString(R.string.operation_title_install, rawId)
             ACTION_UNINSTALL -> getString(R.string.operation_title_uninstall, rawId)
+            ACTION_INSTALL_PACKAGES -> getString(R.string.operation_title_install_packages, rawId)
+            ACTION_INSTALL_FLATPAK -> getString(R.string.operation_title_install_packages, rawId)
             else -> getString(R.string.app_name)
         }
         val (notifId, notif) = OperationsNotificationCenter.placeholderForegroundFor(
@@ -205,8 +209,19 @@ class InstallationService : Service() {
                 intent.getStringExtra(EXTRA_EXTERNAL_BINDS),
                 intent.getBooleanExtra(EXTRA_ANDO, false),
                 intent.getStringExtra(EXTRA_BOOTSTRAP),
+                intent.getStringExtra(EXTRA_DESKTOPS),
             )
             ACTION_UNINSTALL -> startUninstall(rawId)
+            ACTION_INSTALL_PACKAGES -> startInstallPackages(
+                rawId,
+                intent.getStringArrayListExtra(EXTRA_PACKAGES_LIST).orEmpty(),
+                intent.getStringExtra(EXTRA_PACKAGES_LABEL) ?: "",
+            )
+            ACTION_INSTALL_FLATPAK -> startInstallFlatpak(
+                rawId,
+                intent.getStringExtra(EXTRA_FLATPAK_APP_ID) ?: "",
+                intent.getStringExtra(EXTRA_FLATPAK_NAME) ?: "",
+            )
             else -> {
                 Log.w(TAG, "InstallationService started without a known action")
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -254,6 +269,7 @@ class InstallationService : Service() {
         externalBindsJson: String? = null,
         andoEnabled: Boolean = false,
         bootstrapFlavorId: String? = null,
+        desktopIds: String? = null,
     ) {
         if (!Installation.isValidId(id)) {
             rejectInstall(id, getString(R.string.install_reject_invalid_id))
@@ -428,6 +444,23 @@ class InstallationService : Service() {
                 externalBinds.joinToString { "${it.guestPath} <- ${it.hostPath}" })
         }
         val rootfsPath = store.rootfsDir(id).absolutePath
+        // Optional desktop-environment selections, resolved to options.
+        // Unknown ids are dropped by DesktopOptions (forward-compatible
+        // wire format). Only meaningful for distros that can install
+        // them (apt family); reject cleanly up front for the rest so a
+        // broker-driven selection fails fast instead of midway through
+        // the base install.
+        val desktopOptions = DesktopOptions.parseSelection(desktopIds)
+        if (desktopOptions.isNotEmpty() && !distro.supportsExtraPackages) {
+            rejectInstall(
+                id,
+                getString(R.string.install_reject_desktops_unsupported, distro.key),
+            )
+            return
+        }
+        if (desktopOptions.isNotEmpty()) {
+            appendLog("[install] desktops: " + desktopOptions.joinToString { it.label })
+        }
         val op = MutableOperation(
             id = "install:$id",
             title = getString(R.string.operation_title_install, id),
@@ -454,7 +487,7 @@ class InstallationService : Service() {
             val installer = Installer(
                 applicationContext, store, BootstrapCache(applicationContext),
                 distro, method, id, label, mirrorProxy, externalBinds, andoEnabled,
-                bootstrapFlavor,
+                bootstrapFlavor, desktopOptions,
             )
             try {
                 // runInterruptible maps coroutine cancellation onto a
@@ -475,6 +508,141 @@ class InstallationService : Service() {
                 if (pendingFollowupUninstallId != id) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                 }
+                clearCurrentJob(id)
+            }
+        }
+        currentJob = JobState(job, id, JobKind.INSTALL, op)
+    }
+
+    /**
+     * Install extra packages (the in-app "app store") into an existing
+     * READY install. [labels] are the display names for the progress line.
+     * Refuses unless the install is READY, a job isn't running, and the
+     * distro supports extra package installs (apt family).
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun startInstallPackages(id: String, packages: List<String>, labels: String) {
+        if (packages.isEmpty()) return
+        if (currentJob?.job?.isActive == true) {
+            rejectInstall(id, getString(R.string.install_reject_job_running))
+            return
+        }
+        _log.resetReplayCache()
+        lastLoggedStage = null
+        val store = InstallationStore(applicationContext)
+        val inst = store.load(id) ?: run {
+            rejectInstall(id, getString(R.string.store_no_install, id))
+            return
+        }
+        if (inst.state != Installation.State.READY) {
+            rejectInstall(id, getString(R.string.store_not_ready, stateLabel(inst.state)))
+            return
+        }
+        val method = InstallationMethod.forKey(applicationContext, inst.method) ?: run {
+            rejectInstall(id, getString(R.string.install_reject_method_not_enabled, inst.method, EnabledMethods.keys.joinToString()))
+            return
+        }
+        val distro = DistroRegistry.forInstallation(inst) ?: run {
+            rejectInstall(id, getString(R.string.install_reject_unknown_distro, inst.distro, ""))
+            return
+        }
+        if (!distro.supportsExtraPackages) {
+            rejectInstall(id, getString(R.string.install_reject_desktops_unsupported, distro.key))
+            return
+        }
+        appendLog("[store] installing: $labels")
+        val op = MutableOperation(
+            id = "install-packages:$id",
+            title = getString(R.string.operation_title_install_packages, id),
+            log = _log,
+            cancelConfirmation = null,
+            cancelHandler = { },
+        )
+        OperationsRegistry.register(op)
+        val (notifId, notif) = OperationsNotificationCenter.fgsAnchorFor(op.id)
+        startDataSyncForeground(notifId, notif)
+        val job = scope.launch {
+            val installer = Installer(
+                applicationContext, store, BootstrapCache(applicationContext),
+                distro, method, id,
+            )
+            try {
+                publishProgress(InstallProgress(
+                    InstallStage.EXTRA_PACKAGES,
+                    getString(R.string.install_progress_installing_desktops, labels),
+                ))
+                runInterruptible(Dispatchers.IO) {
+                    installer.installPackages(packages, ::publishProgress, ::appendLog)
+                }
+            } catch (t: Throwable) {
+                handleInstallThrow(store, id, t)
+            } finally {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                clearCurrentJob(id)
+            }
+        }
+        currentJob = JobState(job, id, JobKind.INSTALL, op)
+    }
+
+    /**
+     * Install a Flatpak app ([appId]) into an existing READY install.
+     * Same gate + foreground-service shape as [startInstallPackages], but
+     * dispatches to [Installer.installFlatpak] (notes/flatpak.md).
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun startInstallFlatpak(id: String, appId: String, name: String) {
+        if (appId.isEmpty()) return
+        if (currentJob?.job?.isActive == true) {
+            rejectInstall(id, getString(R.string.install_reject_job_running))
+            return
+        }
+        _log.resetReplayCache()
+        lastLoggedStage = null
+        val store = InstallationStore(applicationContext)
+        val inst = store.load(id) ?: run {
+            rejectInstall(id, getString(R.string.store_no_install, id))
+            return
+        }
+        if (inst.state != Installation.State.READY) {
+            rejectInstall(id, getString(R.string.store_not_ready, stateLabel(inst.state)))
+            return
+        }
+        val method = InstallationMethod.forKey(applicationContext, inst.method) ?: run {
+            rejectInstall(id, getString(R.string.install_reject_method_not_enabled, inst.method, EnabledMethods.keys.joinToString()))
+            return
+        }
+        val distro = DistroRegistry.forInstallation(inst) ?: run {
+            rejectInstall(id, getString(R.string.install_reject_unknown_distro, inst.distro, ""))
+            return
+        }
+        appendLog("[store] installing flatpak app: $appId")
+        val op = MutableOperation(
+            id = "install-flatpak:$id",
+            title = getString(R.string.operation_title_install_packages, id),
+            log = _log,
+            cancelConfirmation = null,
+            cancelHandler = { },
+        )
+        OperationsRegistry.register(op)
+        val (notifId, notif) = OperationsNotificationCenter.fgsAnchorFor(op.id)
+        startDataSyncForeground(notifId, notif)
+        val job = scope.launch {
+            val installer = Installer(
+                applicationContext, store, BootstrapCache(applicationContext),
+                distro, method, id,
+            )
+            try {
+                publishProgress(InstallProgress(
+                    InstallStage.EXTRA_PACKAGES,
+                    getString(R.string.install_progress_installing_desktops, name),
+                ))
+                runInterruptible(Dispatchers.IO) {
+                    installer.installFlatpak(appId, name, ::publishProgress, ::appendLog)
+                }
+            } catch (t: Throwable) {
+                handleInstallThrow(store, id, t)
+            } finally {
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 clearCurrentJob(id)
             }
         }
@@ -928,6 +1096,8 @@ class InstallationService : Service() {
 
         const val ACTION_INSTALL = "me.phie.tawc.install.SERVICE_INSTALL"
         const val ACTION_UNINSTALL = "me.phie.tawc.install.SERVICE_UNINSTALL"
+        const val ACTION_INSTALL_PACKAGES = "me.phie.tawc.install.SERVICE_INSTALL_PACKAGES"
+        const val ACTION_INSTALL_FLATPAK = "me.phie.tawc.install.SERVICE_INSTALL_FLATPAK"
         const val EXTRA_ID = "id"
         const val EXTRA_METHOD = "method"
         const val EXTRA_DISTRO = "distro"
@@ -941,6 +1111,15 @@ class InstallationService : Service() {
          *  distro's supported flavor. Non-supported flavors are
          *  debug-only, enforced in [startInstall]. */
         const val EXTRA_BOOTSTRAP = "bootstrap"
+        const val EXTRA_DESKTOPS = "desktops"
+        /** Package-name list for the app-store install path. */
+        const val EXTRA_PACKAGES_LIST = "packages"
+        /** Human label (comma-joined names) for the progress line. */
+        const val EXTRA_PACKAGES_LABEL = "packagesLabel"
+        /** Flatpak app id (e.g. `org.gnome.Calculator`) for the store install path. */
+        const val EXTRA_FLATPAK_APP_ID = "flatpakAppId"
+        /** Flatpak app display name (for the launcher .desktop + progress line). */
+        const val EXTRA_FLATPAK_NAME = "flatpakName"
 
         fun startInstall(
             context: Context,
@@ -952,6 +1131,7 @@ class InstallationService : Service() {
             externalBindsJson: String? = null,
             andoEnabled: Boolean = false,
             bootstrapFlavorId: String? = null,
+            desktopIds: String? = null,
         ) {
             val i = Intent(context, InstallationService::class.java)
                 .setAction(ACTION_INSTALL)
@@ -963,6 +1143,7 @@ class InstallationService : Service() {
             if (externalBindsJson != null) i.putExtra(EXTRA_EXTERNAL_BINDS, externalBindsJson)
             if (andoEnabled) i.putExtra(EXTRA_ANDO, true)
             if (bootstrapFlavorId != null) i.putExtra(EXTRA_BOOTSTRAP, bootstrapFlavorId)
+            if (desktopIds != null) i.putExtra(EXTRA_DESKTOPS, desktopIds)
             context.startForegroundService(i)
         }
 
@@ -970,6 +1151,26 @@ class InstallationService : Service() {
             val i = Intent(context, InstallationService::class.java)
                 .setAction(ACTION_UNINSTALL)
                 .putExtra(EXTRA_ID, id)
+            context.startForegroundService(i)
+        }
+
+        /** App-store package install: run apt for [packages] in [id]. */
+        fun startInstallPackages(context: Context, id: String, packages: List<String>, labels: String) {
+            val i = Intent(context, InstallationService::class.java)
+                .setAction(ACTION_INSTALL_PACKAGES)
+                .putExtra(EXTRA_ID, id)
+                .putStringArrayListExtra(EXTRA_PACKAGES_LIST, ArrayList(packages))
+                .putExtra(EXTRA_PACKAGES_LABEL, labels)
+            context.startForegroundService(i)
+        }
+
+        /** Flatpak-app store install: ensure flatpak + install [appId] in [id]. */
+        fun startInstallFlatpak(context: Context, id: String, appId: String, name: String) {
+            val i = Intent(context, InstallationService::class.java)
+                .setAction(ACTION_INSTALL_FLATPAK)
+                .putExtra(EXTRA_ID, id)
+                .putExtra(EXTRA_FLATPAK_APP_ID, appId)
+                .putExtra(EXTRA_FLATPAK_NAME, name)
             context.startForegroundService(i)
         }
     }

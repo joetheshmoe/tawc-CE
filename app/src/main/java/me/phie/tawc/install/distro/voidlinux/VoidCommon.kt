@@ -1,7 +1,10 @@
 package me.phie.tawc.install.distro.voidlinux
 
+import me.phie.tawc.install.InstallProgress
+import me.phie.tawc.install.InstallStage
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
+import me.phie.tawc.install.PackageProgressParser
 import me.phie.tawc.install.ShellDefaults
 import java.io.IOException
 
@@ -206,6 +209,7 @@ internal object VoidCommon {
         method: InstallationMethod,
         rootfs: String,
         log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit = {},
     ) {
         val cruft = CRUFT_PACKAGES.joinToString(" ")
         // Per-package `xbps-remove -Ry` rather than one big `-RFy`:
@@ -233,7 +237,7 @@ internal object VoidCommon {
                 fi
             done
             """.trimIndent(),
-            onLine = filteringLog(log),
+            onLine = lineSink(InstallStage.PKG_KEYRING, PackageProgressParser(syncLabel = "Upgrading xbps", configureLabel = "Removing cruft"), log, progress),
         )
         if (!res.ok) {
             throw IOException("xbps self-upgrade / cruft removal failed (exit=${res.exitCode})")
@@ -270,6 +274,7 @@ internal object VoidCommon {
         rootfs: String,
         packages: List<String>,
         log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit = {},
     ) {
         val res = method.runInside(
             rootfs,
@@ -282,7 +287,7 @@ internal object VoidCommon {
             # -mindepth 1 keeps the dir for future xbps calls.
             find /var/cache/xbps -mindepth 1 -delete
             """.trimIndent(),
-            onLine = filteringLog(log),
+            onLine = lineSink(InstallStage.PKG_INSTALL, PackageProgressParser(), log, progress),
         )
         if (!res.ok) {
             throw IOException("xbps base-package install failed (exit=${res.exitCode})")
@@ -325,4 +330,22 @@ internal object VoidCommon {
 
     private val NOISE_ETA = Regex("\\bETA:\\s*\\d+")
     private val NOISE_AVG_RATE = Regex("\\[avg rate:")
+
+    /**
+     * Route a filtered stream to [log] (via [filteringLog]) while feeding
+     * every line to [parser] for structured [InstallProgress] ticks — xbps's
+     * `[NN%]` / `[avg rate: …]` lines are the progress signal, and they're
+     * exactly what [filteringLog] hides from the log.
+     */
+    private fun lineSink(
+        stage: InstallStage,
+        parser: PackageProgressParser,
+        log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit,
+    ): (String) -> Unit = { line ->
+        filteringLog(log)(line)
+        parser.feed(line)?.let { tick ->
+            progress(InstallProgress(stage, tick.message, tick.percent))
+        }
+    }
 }

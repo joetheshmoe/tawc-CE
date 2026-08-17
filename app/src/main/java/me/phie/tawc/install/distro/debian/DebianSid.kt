@@ -75,6 +75,8 @@ internal sealed class DebianSid(
 
     final override val basePackages: List<String> = AptCommon.DEFAULT_BASE_PACKAGES
 
+    final override val supportsExtraPackages: Boolean = true
+
     final override fun configure(
         method: InstallationMethod,
         rootfs: String,
@@ -90,11 +92,28 @@ internal sealed class DebianSid(
         log = log,
     )
 
-    final override fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
-        AptCommon.initPackageManager(method, rootfs, log)
+    final override fun initPackageManager(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit,
+    ) = AptCommon.initPackageManager(method, rootfs, log, progress)
 
-    final override fun installBasePackages(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
-        AptCommon.installBasePackages(method, rootfs, basePackages, log)
+    final override fun installBasePackages(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit,
+    ) = AptCommon.installBasePackages(method, rootfs, basePackages, log, progress)
+
+    final override fun installExtraPackages(
+        packages: List<String>,
+        setupScript: String,
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit,
+    ) = AptCommon.installExtraPackages(method, rootfs, packages, setupScript, log, progress)
 
     companion object {
         private const val SUITE = "sid"

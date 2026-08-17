@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import me.phie.tawc.R
+import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.InstallationStore
@@ -90,17 +91,91 @@ object EntryLauncher {
             Log.w(TAG, "terminal entry ${entry.id}: native terminal is tawcroot-only, running headless")
         }
         val rootfs = InstallationStore(appContext).rootfsDir(inst.id).absolutePath
-        val cmd = "${entry.exec} </dev/null >/dev/null 2>&1"
+        // Keep stdin from /dev/null and stdout discarded, but leave stderr
+        // on the pipe so a crashing app's "why" (missing .so, Wayland
+        // connect failure, GTK fatal) is captured for the failure dialog
+        // instead of lost to /dev/null.
+        val cmd = "${entry.exec} </dev/null >/dev/null"
         LAUNCH_SCOPE.launch {
-            runCatching { UserRootfsSession.runInside(appContext, method, rootfs, cmd) }
-                .onFailure { e ->
-                    Log.w(TAG, "launch ${entry.id}: $e")
-                    val title = appContext.getString(
-                        R.string.launcher_launch_failed_title,
-                        entry.name.ifEmpty { entry.id },
-                    )
-                    LaunchErrorActivity.start(appContext, title, e.message ?: e.javaClass.simpleName)
+            // Orientation force for this launch: the per-entry override
+            // wins, else the .desktop file's X-Tawc-Orientation. Stays
+            // live for the whole launch (NativeBridge reads it at each
+            // spawnActivity), so every window of a DE session inherits
+            // the force and later launches start clean. See
+            // NativeBridge.orientationSession.
+            val orientation = inst.desktopOrientations[entry.id] ?: entry.orientation
+            if (orientation.isNotEmpty()) {
+                NativeBridge.orientationSession = orientation
+            }
+            // Desktop-environment sessions (tawc-de-* entries) collapse
+            // onto one Android task for their lifetime — see
+            // NativeBridge.desktopSession. Non-DE launches leave it
+            // alone, so an app started while a DE runs joins the
+            // desktop's task rather than spawning its own card.
+            val desktop = entry.id.startsWith("tawc-de-")
+            if (desktop) {
+                NativeBridge.desktopSession = true
+            }
+            try {
+                // Snapshot the window epoch before spawn so we can detect
+                // "ran but never opened a window" on exit. Terminal and DE
+                // entries are exempt — a CLI tool legitimately opens
+                // nothing, and a DE opens windows lazily over its life.
+                val diagnostics = !entry.terminal && !desktop
+                val windowEpoch = if (diagnostics) NativeBridge.windowEpoch else 0L
+                val result = UserRootfsSession.runInside(appContext, method, rootfs, cmd)
+                if (diagnostics) {
+                    if (result.exitCode != 0) {
+                        reportLaunchFailure(
+                            appContext, entry,
+                            appContext.getString(R.string.launcher_exited_with_code, result.exitCode),
+                            result.output,
+                        )
+                    } else if (NativeBridge.windowEpoch == windowEpoch) {
+                        reportLaunchFailure(
+                            appContext, entry,
+                            appContext.getString(R.string.launcher_no_window_opened),
+                            result.output,
+                        )
+                    }
                 }
+            } catch (e: Throwable) {
+                Log.w(TAG, "launch ${entry.id}: $e")
+                val title = appContext.getString(
+                    R.string.launcher_launch_failed_title,
+                    entry.name.ifEmpty { entry.id },
+                )
+                LaunchErrorActivity.start(appContext, title, e.message ?: e.javaClass.simpleName)
+            } finally {
+                NativeBridge.orientationSession = ""
+                if (desktop) {
+                    NativeBridge.desktopSession = false
+                }
+            }
         }
+    }
+
+    /**
+     * Surface a GUI app's failed launch: the reason (exit code / no window)
+     * plus the tail of the program's stderr so the user can see *why*.
+     */
+    private fun reportLaunchFailure(
+        appContext: Context,
+        entry: LauncherEntry,
+        reason: String,
+        output: String,
+    ) {
+        val title = appContext.getString(
+            R.string.launcher_launch_failed_title,
+            entry.name.ifEmpty { entry.id },
+        )
+        val stderrTail = output.lineSequence()
+            .filter { it.isNotBlank() }
+            .toList()
+            .takeLast(12)
+            .joinToString("\n")
+        val message = if (stderrTail.isEmpty()) reason else "$reason\n\n$stderrTail"
+        Log.w(TAG, "launch ${entry.id}: $reason${if (stderrTail.isNotEmpty()) "\n$stderrTail" else ""}")
+        LaunchErrorActivity.start(appContext, title, message)
     }
 }

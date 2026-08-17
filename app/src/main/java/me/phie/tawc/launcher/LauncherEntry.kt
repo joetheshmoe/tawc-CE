@@ -30,6 +30,14 @@ data class LauncherEntry(
      * ones; empty only for malformed scanner output.
      */
     val path: String = "",
+    /**
+     * Preferred screen orientation from the `.desktop` file's
+     * `X-Tawc-Orientation` key: `"landscape"`, `"portrait"`, or `""`
+     * (follow the system). A suggestion only — a per-entry setting in
+     * [me.phie.tawc.install.Installation.desktopOrientations] overrides
+     * it at launch time.
+     */
+    val orientation: String = "",
 ) {
     companion object {
         /**
@@ -86,6 +94,7 @@ data class LauncherEntry(
                                 terminal = o.optBoolean("terminal", false),
                                 iconPath = o.optString("iconPath"),
                                 path = o.optString("path"),
+                                orientation = o.optString("orientation"),
                             )
                         )
                     }

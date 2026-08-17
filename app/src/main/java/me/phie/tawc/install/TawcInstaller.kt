@@ -59,6 +59,7 @@ internal object TawcInstaller {
         MesaZinkInstallProvider,
         AndoInstallProvider,
         ShellDefaultsInstallProvider,
+        FlatpakInstallProvider,
     )
 
     /**

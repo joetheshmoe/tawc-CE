@@ -3,9 +3,11 @@ package me.phie.tawc.ops
 import android.app.Activity
 import android.content.res.ColorStateList
 import android.graphics.Typeface
+import android.os.SystemClock
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.LeadingMarginSpan
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -18,7 +20,9 @@ import com.google.android.material.color.MaterialColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.phie.tawc.R
 import me.phie.tawc.ui.tawcCard
@@ -45,12 +49,14 @@ class OperationLogPanel(private val activity: Activity) {
 
     val view: LinearLayout
     private val statusText: TextView
+    private val timeText: TextView
     private val progressBar: ProgressBar
     private val logText: TextView
     private val logScroll: ScrollView
     private val cancelButton: MaterialButton
 
     private var collectScope: CoroutineScope? = null
+    private var startedAtMs = 0L
 
     /** The currently bound op, or `null`. Owners may read this from [onCancelClicked]. */
     var boundOperation: Operation? = null
@@ -73,7 +79,21 @@ class OperationLogPanel(private val activity: Activity) {
             text = ""
             setTypeface(typeface, Typeface.BOLD)
         }
-        view.addView(statusText, lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        timeText = TextView(activity).apply {
+            text = ""
+            textSize = 12f
+            alpha = 0.6f
+            gravity = Gravity.END
+        }
+        val statusRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        statusRow.addView(statusText, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        statusRow.addView(timeText, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).also {
+            it.marginStart = pad / 2
+        })
+        view.addView(statusRow, lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
 
         progressBar = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
@@ -121,6 +141,7 @@ class OperationLogPanel(private val activity: Activity) {
     fun bind(op: Operation) {
         unbind()
         boundOperation = op
+        startedAtMs = SystemClock.elapsedRealtime()
         val cs = CoroutineScope(Dispatchers.Main)
         collectScope = cs
 
@@ -130,6 +151,13 @@ class OperationLogPanel(private val activity: Activity) {
 
         cs.launch {
             op.log.collect { line -> appendLog(line) }
+        }
+
+        cs.launch {
+            while (isActive) {
+                updateElapsed()
+                delay(1000)
+            }
         }
     }
 
@@ -172,6 +200,26 @@ class OperationLogPanel(private val activity: Activity) {
         val terminal = p.stage.isTerminal || p.stage == OperationStage.IDLE
         progressBar.visibility = if (terminal) View.GONE else View.VISIBLE
         cancelButton.visibility = if (terminal) View.GONE else View.VISIBLE
+        if (p.stage == OperationStage.RUNNING) {
+            updateElapsed()
+            timeText.visibility = View.VISIBLE
+        } else {
+            timeText.visibility = View.GONE
+        }
+    }
+
+    private fun updateElapsed() {
+        if (startedAtMs == 0L) return
+        timeText.text = formatDuration(SystemClock.elapsedRealtime() - startedAtMs)
+    }
+
+    private fun formatDuration(ms: Long): String {
+        val s = ms / 1000
+        return when {
+            s < 60 -> "${s}s"
+            s < 3600 -> "${s / 60}m ${s % 60}s"
+            else -> "${s / 3600}h ${(s % 3600) / 60}m"
+        }
     }
 
     /**
@@ -182,6 +230,9 @@ class OperationLogPanel(private val activity: Activity) {
      */
     fun reset() {
         statusText.text = ""
+        timeText.text = ""
+        timeText.visibility = View.GONE
+        startedAtMs = 0L
         logText.text = ""
         progressBar.isIndeterminate = true
         progressBar.progress = 0

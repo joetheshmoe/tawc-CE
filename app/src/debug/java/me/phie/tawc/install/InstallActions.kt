@@ -70,6 +70,9 @@ internal object InstallActions {
             // Bootstrap flavor (tarball / packages); absent = the
             // distro's supported flavor. Validated by the service gate.
             val bootstrap = args["bootstrap"]
+            // Optional desktop environments (comma/space-separated ids,
+            // see DesktopOptions). Empty/absent = bare install.
+            val desktops = args["desktops"]
 
             val opId = "install:$id"
             tryOpenLogScreen(ctx.appContext, opId)
@@ -79,11 +82,12 @@ internal object InstallActions {
                 (mirrorProxy?.let { " mirrorProxy=$it" } ?: "") +
                 (externalBinds?.let { " externalBinds=$it" } ?: "") +
                 (bootstrap?.let { " bootstrap=$it" } ?: "") +
+                (desktops?.let { " desktops=$it" } ?: "") +
                 " ando=$ando")
 
             InstallationService.startInstall(
                 ctx.appContext, id, method, distro, label, mirrorProxy, externalBinds, ando,
-                bootstrap,
+                bootstrap, desktops,
             )
             return mirrorOperation(opId, ctx)
         }

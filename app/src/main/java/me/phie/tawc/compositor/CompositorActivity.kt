@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -80,6 +81,23 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
+    /**
+     * Apply a launch-declared orientation force (`"landscape"` /
+     * `"portrait"`) to this window, decided by the launch that spawned
+     * it (EntryLauncher's orientation session). The force is fixed —
+     * no sensor fallback — and only this Activity is affected. A
+     * `configChanges="orientation|screenSize"` manifest entry means
+     * Android reconfigures in place and the compositor picks up the
+     * new surface size via `surfaceChanged`.
+     */
+    @Suppress("DEPRECATION")
+    private fun applyRequestedOrientation(value: String?) {
+        when (value) {
+            "landscape" -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            "portrait" -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
     @Suppress("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -100,6 +118,7 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
             finishAndRemoveTask()
             return
         }
+        applyRequestedOrientation(intent.getStringExtra(EXTRA_ORIENTATION))
 
         // Ensure and bind the CompositorService. The Service owns the
         // compositor thread (and runs xkb-data extraction) and survives
@@ -597,6 +616,12 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
     companion object {
         private const val TAG = "tawc"
         private const val TASK_ICON_SIZE_DP = 96
+
+        /** Intent extra: launch-declared orientation force (`landscape` /
+         *  `portrait`, or absent = follow system). Set by
+         *  [NativeBridge.spawnActivity] from the launch's orientation
+         *  session. */
+        const val EXTRA_ORIENTATION = "orientation"
 
         private fun decodeTaskIcon(path: String, targetPx: Int): Bitmap? {
             val f = File(path)

@@ -16,6 +16,7 @@ use smithay::reexports::wayland_server::Resource;
 use smithay::backend::input::TouchSlot;
 use smithay::backend::input::KeyState;
 use smithay::desktop::{PopupManager, WindowSurfaceType};
+use smithay::desktop::layer_map_for_output;
 use smithay::desktop::PopupUngrabStrategy;
 use smithay::input::keyboard::{FilterResult, Keycode};
 use smithay::input::touch::{DownEvent, MotionEvent, UpEvent};
@@ -29,6 +30,7 @@ use smithay::wayland::compositor::{
     get_parent, get_role, SUBSURFACE_ROLE,
 };
 use smithay::wayland::shell::xdg::XDG_POPUP_ROLE;
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 use wayland_server::{Display, ListeningSocket};
 
 use crate::host::{ActivityId, OutputHost, SurfaceEvent};
@@ -59,6 +61,23 @@ fn touch_focus_at(
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
     if data.desktop_visible_host_id().as_ref() != Some(activity_id) {
         return None;
+    }
+
+    // Layer-shell surfaces above windows (panels, overlays) get touch
+    // priority — a tap on the panel must reach the panel, not the
+    // window underneath it.
+    let layer_map = layer_map_for_output(&data.output);
+    for layer_kind in [WlrLayer::Overlay, WlrLayer::Top] {
+        if let Some(layer) = layer_map.layer_under(layer_kind, location) {
+            let base = layer_map
+                .layer_geometry(layer)
+                .map(|g| Point::from((g.loc.x as f64, g.loc.y as f64)))
+                .unwrap_or_default();
+            let rel = location - base;
+            if let Some((surface, origin)) = layer.surface_under(rel, WindowSurfaceType::ALL) {
+                return Some((surface, Point::from((origin.x as f64, origin.y as f64))));
+            }
+        }
     }
 
     let Some(visible_space) = data.desktop.visible_space(&data.hosts) else {
@@ -987,6 +1006,15 @@ fn handle_surface_event(
         SurfaceEvent::Gtk3BrokenMenusWorkaroundChanged { enabled } => {
             crate::gtk3_menus_workaround::set_enabled(data, enabled);
         }
+        SurfaceEvent::DesktopSessionChanged { active } => {
+            if data.single_activity_mode != active {
+                data.single_activity_mode = active;
+                log::info!("desktop session single_activity_mode={}", active);
+            }
+            if !active {
+                data.desktop_session_host = None;
+            }
+        }
         SurfaceEvent::FullscreenChanged { activity_id, fullscreen } => {
             data.set_host_fullscreen(&activity_id, fullscreen);
             data.needs_render = true;
@@ -1111,4 +1139,6 @@ fn reconfigure_all_toplevels(state: &mut TawcState) {
     }
 
     crate::xwayland::configure_x11_toplevels_for_hosts(state);
+    // Re-flow layer surfaces (panels) for the new output size.
+    crate::compositor::arrange_layers(state);
 }

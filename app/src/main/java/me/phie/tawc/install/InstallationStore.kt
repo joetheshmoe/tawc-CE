@@ -94,7 +94,15 @@ class InstallationStore(context: Context) {
         return dir.listFiles { f -> f.isDirectory }
             ?.mapNotNull { d ->
                 val meta = File(d, "metadata.json")
-                if (!meta.exists()) return@mapNotNull null
+                if (!meta.exists()) {
+                    // Ghost dir left by interrupted install (mkdirs before
+                    // save). Prune empty ghosts so they don't squat the id
+                    // and confuse MainActivity's empty-state copy.
+                    if ((d.listFiles()?.isEmpty() != false)) {
+                        runCatching { d.delete() }
+                    }
+                    return@mapNotNull null
+                }
                 parseOrCorrupt(d.name, meta)
             }
             ?.sortedBy { it.id }

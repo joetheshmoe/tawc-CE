@@ -55,6 +55,51 @@ object NativeBridge {
     private val fullscreenByActivity = mutableMapOf<String, Boolean>()
     private val pendingFinishActivities = mutableSetOf<String>()
 
+    /**
+     * Preferred orientation for windows spawned by the launch currently
+     * in flight (`"landscape"` / `"portrait"` / `""` = follow system).
+     * Set by [me.phie.tawc.launcher.EntryLauncher] before it blocks in
+     * `runInside` and cleared when the launch returns, so every window
+     * a DE session opens inherits the force while the session lives and
+     * later launches start clean. Read at spawn time (see
+     * [spawnActivity]) — a window keeps the orientation its spawn
+     * decided, even if the session ends while it stays open.
+     */
+    @Volatile var orientationSession: String = ""
+
+    /**
+     * Whether a desktop-environment launch is in flight (a `tawc-de-*`
+     * launcher entry). While set, the compositor collapses all new
+     * toplevels onto one host so a DE session's windows share a single
+     * Android task instead of spawning one card per window — the DE is
+     * one "app", and RAM stays bounded. Set/cleared by
+     * [me.phie.tawc.launcher.EntryLauncher] around `runInside`, like
+     * [orientationSession]; non-DE launches don't touch it, so apps
+     * launched while a DE runs join the desktop's task.
+     */
+    var desktopSession: Boolean
+        get() = desktopSessionField
+        set(value) {
+            if (desktopSessionField != value) {
+                desktopSessionField = value
+                nativeSetDesktopSession(value)
+            }
+        }
+
+    @Volatile private var desktopSessionField = false
+
+    /**
+     * Monotonic counter bumped each time a new toplevel appears (the
+     * reverse-JNI `onToplevelCountChanged` sees a rising count). Launch
+     * diagnostics snapshot it before spawning a GUI app and compare after
+     * the program exits, to tell "crashed with code N" apart from "ran but
+     * never opened a window" — see [me.phie.tawc.launcher.EntryLauncher].
+     */
+    private val windowEpochLock = Any()
+    @Volatile private var lastToplevelCount = 0
+    @Volatile var windowEpoch: Long = 0L
+        private set
+
     fun attachService(service: CompositorService) {
         appContext = service.applicationContext
         serviceRef = WeakReference(service)
@@ -247,6 +292,10 @@ object NativeBridge {
     /** Toggle the contained GTK3 broken menubar workaround. */
     external fun nativeSetGtk3BrokenMenusWorkaround(enabled: Boolean)
 
+    /** Collapse new toplevels onto the first host while a desktop
+     *  environment session runs ([desktopSession]). */
+    external fun nativeSetDesktopSession(active: Boolean)
+
     /** Test hook: ask every attached Wayland/XWayland client window to close. */
     external fun nativeCloseAllClientsForTest(): Int
 
@@ -320,6 +369,10 @@ object NativeBridge {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_NEW_DOCUMENT or
                         Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                // Orientation is decided at spawn: the launch in flight
+                // (EntryLauncher's orientationSession) may force one,
+                // and the window keeps it for its lifetime.
+                putExtra(CompositorActivity.EXTRA_ORIENTATION, orientationSession)
             }
             ctx.startActivity(intent)
         }
@@ -393,6 +446,10 @@ object NativeBridge {
 
     @JvmStatic
     fun onToplevelCountChanged(count: Int) {
+        synchronized(windowEpochLock) {
+            if (count > lastToplevelCount) windowEpoch++
+            lastToplevelCount = count
+        }
         mainHandler.post {
             serviceRef?.get()?.updateToplevelCount(count)
         }

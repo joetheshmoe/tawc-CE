@@ -73,6 +73,16 @@ data class Installation(
      */
     val hiddenDesktopIds: List<String> = emptyList(),
     /**
+     * Per-entry screen-orientation overrides: desktop-entry id →
+     * `"landscape"` / `"portrait"` / `"system"`. `"system"` (and an
+     * absent key) explicitly clears any force — this is the "disable
+     * the force" path for entries whose `.desktop` file declares
+     * `X-Tawc-Orientation`. Applied at launch time by
+     * [me.phie.tawc.launcher.EntryLauncher]; the Rust scanner never
+     * sees it. Stale ids are harmless, like [hiddenDesktopIds].
+     */
+    val desktopOrientations: Map<String, String> = emptyMap(),
+    /**
      * Whether this install may use ando (notes/ando.md) — run Android
      * commands outside the Linux environment. Default `false`: opt-in,
      * fail-closed. Absent in legacy metadata parses as `false`, so
@@ -119,6 +129,9 @@ data class Installation(
         if (hiddenDesktopIds.isNotEmpty()) {
             put("hiddenDesktopIds", JSONArray(hiddenDesktopIds))
         }
+        if (desktopOrientations.isNotEmpty()) {
+            put("desktopOrientations", JSONObject(desktopOrientations))
+        }
         if (andoEnabled) put("andoEnabled", true)
     }.toString(2)
 
@@ -133,6 +146,20 @@ data class Installation(
             if (entryId in hiddenDesktopIds) hiddenDesktopIds else hiddenDesktopIds + entryId
         } else {
             hiddenDesktopIds - entryId
+        }
+    )
+
+    /**
+     * Copy with [entryId]'s orientation override set to [orientation]
+     * (`"landscape"` / `"portrait"` / `"system"`); `"system"` removes
+     * the entry. Idempotent; the same mutation shape as
+     * [withEntryHidden], applied through [InstallationStore.update].
+     */
+    fun withEntryOrientation(entryId: String, orientation: String): Installation = copy(
+        desktopOrientations = if (orientation == "system") {
+            desktopOrientations - entryId
+        } else {
+            desktopOrientations + (entryId to orientation)
         }
     )
 
@@ -278,6 +305,18 @@ data class Installation(
                         }
                     }
                 else emptyList(),
+                desktopOrientations = if (obj.has("desktopOrientations"))
+                    obj.getJSONObject("desktopOrientations").let { o ->
+                        buildMap {
+                            val it = o.keys()
+                            while (it.hasNext()) {
+                                val k = it.next()
+                                val v = o.getString(k)
+                                if (v == "landscape" || v == "portrait") put(k, v)
+                            }
+                        }
+                    }
+                else emptyMap(),
                 andoEnabled = obj.optBoolean("andoEnabled", false),
                 bootstrapFlavor = obj.optString("bootstrapFlavor", FLAVOR_TARBALL),
             )

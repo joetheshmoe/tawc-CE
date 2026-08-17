@@ -642,6 +642,79 @@ struct tawc_msghdr {
 	uint32_t _pad2;
 };
 
+/* SCM_CREDENTIALS rewriting for sendmsg (below). glib's GDBus sends
+ * credentials during its unix auth handshake filled from the faked
+ * getuid()/getgid(); rewriting them to the real values on the way in
+ * keeps the kernel's own-credentials check happy. */
+
+/* cmsghdr mirror — <sys/socket.h> isn't included here, and the layout
+ * is identical on the two shipped ABIs (size_t cmsg_len; int level;
+ * int type). */
+struct tawc_cmsghdr {
+	uint64_t cmsg_len;
+	int32_t  cmsg_level;
+	int32_t  cmsg_type;
+};
+_Static_assert(sizeof(struct tawc_cmsghdr) == 16, "cmsghdr ABI is 16 bytes");
+
+/* struct ucred mirror (SO_PEERCRED out-value / SCM_CREDENTIALS cmsg
+ * payload): pid, uid, gid — three 32-bit words. */
+struct tawc_ucred {
+	int32_t  pid;
+	uint32_t uid;
+	uint32_t gid;
+};
+_Static_assert(sizeof(struct tawc_ucred) == 12, "ucred ABI is 3 words");
+
+/* Cap on the guest control buffer we're willing to copy + patch. A
+ * credential handshake carries one ucred cmsg (24 bytes aligned) plus
+ * at most a couple of companions (SCM_RIGHTS fds); anything larger is
+ * pathological and left untouched. */
+#define TAWC_SENDMSG_CONTROL_PATCH_LEN 96
+#define TAWC_CMSG_ALIGN(n) (((n) + sizeof(long) - 1) & ~(sizeof(long) - 1))
+#define TAWC_CMSG_LEN(n) (TAWC_CMSG_ALIGN(sizeof(struct tawc_cmsghdr)) + (n))
+#define TAWC_SOL_SOCKET_LEVEL 1
+#define TAWC_SCM_CREDENTIALS_TYPE 0x02
+
+/* Copy [len] bytes of a guest msghdr msg_control buffer and rewrite
+ * every SCM_CREDENTIALS cmsg's ucred to the process's real
+ * pid/uid/gid. Returns 1 if any cmsg was patched, 0 if the buffer
+ * passed through unchanged (no creds, or too large to patch safely),
+ * or -EFAULT if the guest copy failed. `out` must hold at least
+ * [TAWC_SENDMSG_CONTROL_PATCH_LEN] bytes. */
+static int patch_sendmsg_control(const void *guest_control, uint64_t len,
+				 struct tawc_ucred *out)
+{
+	if (len == 0) return 0;
+	if (len > TAWC_SENDMSG_CONTROL_PATCH_LEN) return 0;
+
+	long e = tawc_copy_from_guest(out, (size_t)len, guest_control);
+	if (e < 0) return (int)TAWC_EFAULT;
+
+	const char *const end = (const char *)out + len;
+	char *p = (char *)out;
+	int patched = 0;
+	while (p + sizeof(struct tawc_cmsghdr) <= end) {
+		struct tawc_cmsghdr *h = (struct tawc_cmsghdr *)p;
+		if (h->cmsg_len < sizeof(struct tawc_cmsghdr)) break;
+		if (h->cmsg_level == TAWC_SOL_SOCKET_LEVEL &&
+		    h->cmsg_type == TAWC_SCM_CREDENTIALS_TYPE &&
+		    h->cmsg_len >= TAWC_CMSG_LEN(sizeof(struct tawc_ucred))) {
+			struct tawc_ucred *cred = (struct tawc_ucred *)(
+				p + TAWC_CMSG_ALIGN(sizeof(struct tawc_cmsghdr)));
+			cred->pid = (int32_t)tawc_getpid();
+			cred->uid = (uint32_t)tawc_getuid();
+			cred->gid = (uint32_t)TAWC_RAW(TAWC_SYS_getgid,
+						      0, 0, 0, 0, 0, 0);
+			patched = 1;
+		}
+		size_t step = TAWC_CMSG_ALIGN(h->cmsg_len);
+		if (step == 0) break;
+		p += step;
+	}
+	return patched;
+}
+
 /* sendmsg(fd, msghdr*, flags): the destination sockaddr lives in
  * msg_name. Copy the msghdr, translate msg_name into a stack-local
  * sockaddr, repoint, and re-issue. Same connectionless-client failure
@@ -657,25 +730,63 @@ static long handle_sendmsg(const tawcroot_syscall_args *args, ucontext_t *uc)
 	struct tawc_msghdr mh;
 	long e = tawc_copy_from_guest(&mh, sizeof mh, gmsg);
 	if (e < 0) return TAWC_EFAULT;
-	if (mh.msg_name == 0 || mh.msg_namelen == 0) {
+
+	/* glib's GDBus sends SCM_CREDENTIALS ancillary data during its
+	 * unix auth handshake, filled from getuid()/getgid(). tawcroot
+	 * fakes those to 0, so the cmsg claims uid 0 while the kernel
+	 * sees the real app uid — the credential mismatch makes the
+	 * kernel reject the sendmsg with EPERM and every glib/dbus
+	 * client (xfconf, gvfs, gnome-shell, …) fails to connect to the
+	 * session bus. Rewrite the credentials to the real values on
+	 * the way in. */
+	int patch_control = 0;
+	/* Aligned(16): the cmsg walk below casts into this buffer as
+	 * `struct tawc_cmsghdr` (which has a uint64 member), so the buffer
+	 * must be at least 8-byte aligned — an un-aligned 64-bit load is
+	 * UB on arm64. The array type is only a size stand-in. */
+	struct tawc_ucred control_patch[TAWC_SENDMSG_CONTROL_PATCH_LEN /
+					sizeof(struct tawc_ucred)]
+		__attribute__((aligned(16)));
+	if (mh.msg_control != 0 && mh.msg_controllen != 0) {
+		patch_control = patch_sendmsg_control(
+			(const void *)(uintptr_t)mh.msg_control,
+			mh.msg_controllen, control_patch);
+		if (patch_control < 0) return patch_control;
+	}
+
+	/* Fast path: no address translation and no credentials to fix —
+	 * the kernel reads the guest msghdr directly, nothing to copy. */
+	if ((mh.msg_name == 0 || mh.msg_namelen == 0) && !patch_control) {
 		return TAWC_RAW(TAWC_SYS_sendmsg, args->a, args->b, args->c,
 				0, 0, 0);
 	}
 	struct tawc_sockaddr_un un_out;
 	long new_addrlen;
-	int close_fd;
-	long t = translate_unix_sockaddr(
-		(const void *)(uintptr_t)mh.msg_name, (long)mh.msg_namelen,
-		&un_out, &new_addrlen, 0, &close_fd);
-	if (t < 0) return t;
-	if (t == 0) {
-		return TAWC_RAW(TAWC_SYS_sendmsg, args->a, args->b, args->c,
-				0, 0, 0);
+	int close_fd = -1;
+	int need_translate = (mh.msg_name != 0 && mh.msg_namelen != 0);
+	if (need_translate) {
+		long t = translate_unix_sockaddr(
+			(const void *)(uintptr_t)mh.msg_name, (long)mh.msg_namelen,
+			&un_out, &new_addrlen, 0, &close_fd);
+		if (t < 0) return t;
+		if (t != 0) {
+			/* Repoint a COPY of the msghdr at our translated
+			 * sockaddr; the guest's msghdr stays untouched. */
+			mh.msg_name = (uint64_t)(uintptr_t)&un_out;
+			mh.msg_namelen = (uint32_t)new_addrlen;
+		} else {
+			/* Non-unix / abstract / nameless destination — the
+			 * address passes through verbatim, but the copy is
+			 * still needed if we patched the control buffer. */
+			need_translate = 0;
+		}
 	}
-	/* Repoint a COPY of the msghdr at our translated sockaddr; the
-	 * guest's msghdr stays untouched. */
-	mh.msg_name = (uint64_t)(uintptr_t)&un_out;
-	mh.msg_namelen = (uint32_t)new_addrlen;
+	if (patch_control) {
+		mh.msg_control = (uint64_t)(uintptr_t)control_patch;
+		/* msg_controllen stays the guest's length — the copy
+		 * buffer is bigger, but only the first `len` bytes are
+		 * valid. */
+	}
 	long rv = TAWC_RAW(TAWC_SYS_sendmsg, args->a, (long)&mh, args->c,
 			   0, 0, 0);
 	if (close_fd >= 0) tawc_close(close_fd);
@@ -800,15 +911,6 @@ static long handle_accept4(const tawcroot_syscall_args *args, ucontext_t *uc)
 	return getname_with_reverse(TAWC_SYS_accept4, args->a,
 				    args->b, args->c, args->d);
 }
-
-/* struct ucred mirror (SO_PEERCRED out-value): pid, uid, gid — three
- * 32-bit words. */
-struct tawc_ucred {
-	int32_t  pid;
-	uint32_t uid;
-	uint32_t gid;
-};
-_Static_assert(sizeof(struct tawc_ucred) == 12, "ucred ABI is 3 words");
 
 /* getsockopt(SOL_SOCKET, SO_PEERCRED) hands back KERNEL credentials,
  * bypassing the virtual identity: server getuid() says 0 but the peer

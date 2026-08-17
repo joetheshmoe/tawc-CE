@@ -25,6 +25,7 @@ object Settings {
     private const val KEY_OUTPUT_SCALE = "output_scale"
     private const val KEY_XWAYLAND = "xwayland"
     private const val KEY_GTK3_BROKEN_MENUS_WORKAROUND = "gtk3_broken_menus_workaround"
+    private const val KEY_ONBOARDING_COMPLETE = "onboarding_complete"
 
     const val MIN_OUTPUT_SCALE = 0.5f
     const val MAX_OUTPUT_SCALE = 4.0f
@@ -38,6 +39,7 @@ object Settings {
         var outputScale: Float
         var xwayland: Boolean
         var gtk3BrokenMenusWorkaround: Boolean
+        var onboardingComplete: Boolean
     }
 
     private class SharedPreferencesStore(private val prefs: SharedPreferences) : Store {
@@ -73,6 +75,12 @@ object Settings {
             set(value) {
                 prefs.edit { putBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, value) }
             }
+
+        override var onboardingComplete: Boolean
+            get() = prefs.getBoolean(KEY_ONBOARDING_COMPLETE, false)
+            set(value) {
+                prefs.edit { putBoolean(KEY_ONBOARDING_COMPLETE, value) }
+            }
     }
 
     private class TestStore : Store {
@@ -82,6 +90,7 @@ object Settings {
             set(value) { field = snapOutputScale(value) }
         @Volatile override var xwayland: Boolean = true
         @Volatile override var gtk3BrokenMenusWorkaround: Boolean = true
+        @Volatile override var onboardingComplete: Boolean = true
     }
 
     @Volatile private var store: Store? = null
@@ -149,6 +158,11 @@ object Settings {
     var gtk3BrokenMenusWorkaround: Boolean
         get() = requireStore().gtk3BrokenMenusWorkaround
         set(value) { requireStore().gtk3BrokenMenusWorkaround = value }
+
+    /** Whether the first-launch onboarding flow has been completed. */
+    var onboardingComplete: Boolean
+        get() = requireStore().onboardingComplete
+        set(value) { requireStore().onboardingComplete = value }
 
     fun snapOutputScale(value: Float): Float {
         if (!value.isFinite()) return DEFAULT_OUTPUT_SCALE

@@ -65,11 +65,19 @@ internal sealed class VoidLinux(
         log: (String) -> Unit,
     ) = VoidCommon.configure(method, rootfs, linuxArch, mirrorProxy, log)
 
-    final override fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
-        VoidCommon.initPackageManager(method, rootfs, log)
+    final override fun initPackageManager(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit,
+    ) = VoidCommon.initPackageManager(method, rootfs, log, progress)
 
-    final override fun installBasePackages(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
-        VoidCommon.installBasePackages(method, rootfs, basePackages, log)
+    final override fun installBasePackages(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit,
+    ) = VoidCommon.installBasePackages(method, rootfs, basePackages, log, progress)
 }
 
 internal object VoidLinuxX86_64 : VoidLinux(

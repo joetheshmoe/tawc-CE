@@ -17,7 +17,11 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.google.android.material.button.MaterialButton
+import me.phie.tawc.Settings
+import me.phie.tawc.onboarding.OnboardingActivity
 import me.phie.tawc.install.DistroInfoActivity
+import me.phie.tawc.install.AppStoreActivity
+import me.phie.tawc.install.FlatpakStoreActivity
 import me.phie.tawc.install.InstallActivity
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
@@ -27,6 +31,7 @@ import me.phie.tawc.launcher.LauncherActivity
 import me.phie.tawc.terminal.TerminalActivity
 import me.phie.tawc.tasks.TaskManagerActivity
 import me.phie.tawc.ui.buildHomeScreen
+import me.phie.tawc.ui.primaryButton
 import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.tawcButtonSizePx
@@ -52,12 +57,48 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // First launch → onboarding flow. Settings is initialised by
+        // TawcApplication.onCreate before any Activity runs.
+        if (!Settings.onboardingComplete) {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+            finish()
+            return
+        }
+
         requestNotificationPermissionIfNeeded()
 
         val scaffold = buildHomeScreen(getString(R.string.app_name))
 
+        // One-line tagline: the app's identity is "run Linux programs
+        // on your phone", and the home screen should say so rather than
+        // implying it's a bare distro installer.
+        scaffold.content.addView(
+            TextView(this).apply {
+                text = getString(R.string.home_subtitle)
+                textSize = 14f
+                alpha = 0.75f
+            },
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin),
+        )
+
         listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scaffold.content.addView(listContainer, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin))
+
+        // The in-app "app store" is a headline feature — make it the
+        // primary action under the distro list, above the utility rows.
+        scaffold.content.addView(
+            primaryButton(getString(R.string.title_app_store)) {
+                startActivity(Intent(this@MainActivity, AppStoreActivity::class.java))
+            },
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin),
+        )
+
+        scaffold.content.addView(
+            tonalButton(getString(R.string.title_flatpak_store)) {
+                startActivity(Intent(this@MainActivity, FlatpakStoreActivity::class.java))
+            },
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin),
+        )
 
         scaffold.content.addView(
             tonalButton(getString(R.string.title_task_manager)) {

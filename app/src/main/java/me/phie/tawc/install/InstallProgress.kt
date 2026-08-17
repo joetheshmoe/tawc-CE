@@ -18,6 +18,8 @@ enum class InstallStage {
     PKG_KEYRING,
     /** Distro-agnostic name for "install the base package set". */
     PKG_INSTALL,
+    /** Optional user-selected extras (desktop environments). */
+    EXTRA_PACKAGES,
     UNMOUNTING,
     DELETING,
     DONE,

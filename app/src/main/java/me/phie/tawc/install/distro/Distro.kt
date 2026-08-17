@@ -156,6 +156,14 @@ interface Distro {
     val basePackages: List<String>
 
     /**
+     * Whether this distro can install arbitrary user-selected packages
+     * at install time (desktop environments). Default false; the apt
+     * family overrides. Gates the install-form DE checkboxes.
+     */
+    val supportsExtraPackages: Boolean
+        get() = false
+
+    /**
      * Write `/etc` configuration into the freshly-extracted [rootfs]:
      * DNS, package-manager config, mirrorlist, profile.d. Runs via
      * [method].runOutside (which is `su` for chroot installs and a
@@ -179,15 +187,47 @@ interface Distro {
     /**
      * Bootstrap the package manager inside the chroot at [rootfs]
      * (e.g. `pacman-key --init && pacman-key --populate <keyring> &&
-     * pacman -Syu`). Runs via [method].runInside.
+     * pacman -Syu`). Runs via [method].runInside. [progress] receives
+     * stage-appropriate [me.phie.tawc.install.InstallProgress] ticks
+     * derived from the streamed package-manager output (bytes, percent,
+     * throughput) — pass `{}` if the caller doesn't render them.
      */
-    fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit)
+    fun initPackageManager(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit = {},
+    )
 
     /**
      * Install [basePackages] inside the chroot at [rootfs]. Runs via
-     * [method].runInside.
+     * [method].runInside; [progress] mirrors [initPackageManager]'s
+     * contract for the base-package install.
      */
-    fun installBasePackages(method: InstallationMethod, rootfs: String, log: (String) -> Unit)
+    fun installBasePackages(
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit = {},
+    )
+
+    /**
+     * Install optional user-selected packages (e.g. desktop environments
+     * from [me.phie.tawc.install.DesktopOptions]) inside the chroot at
+     * [rootfs], after the base set. [packages] are already resolved and
+     * deduplicated; [setupScript] is an optional root shell fragment to
+     * run after the install (per-DE one-time setup). Runs via
+     * [method].runInside. Default: not supported — only distros whose
+     * package manager can install arbitrary packages (apt family) override.
+     */
+    fun installExtraPackages(
+        packages: List<String>,
+        setupScript: String,
+        method: InstallationMethod,
+        rootfs: String,
+        log: (String) -> Unit,
+        progress: (me.phie.tawc.install.InstallProgress) -> Unit = {},
+    ): Unit = throw IOException("distro $key does not support extra package installs")
 }
 
 /**

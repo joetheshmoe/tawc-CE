@@ -616,6 +616,20 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetGtk3Br
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetDesktopSession(
+    _env: JNIEnv,
+    _class: JClass,
+    active: jboolean,
+) {
+    host::set_desktop_session(active != 0);
+    // A running compositor flips immediately; when none is running the
+    // sticky flag seeds the next start (see host::set_desktop_session).
+    host::send_surface_event(SurfaceEvent::DesktopSessionChanged {
+        active: active != 0,
+    });
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeCloseAllClientsForTest(
     _env: JNIEnv,
     _class: JClass,

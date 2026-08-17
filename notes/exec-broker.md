@@ -106,10 +106,13 @@ ARG mirrorProxy=http://127.0.0.1:8080/proxy/
 
 ```
 
-The install action also takes `--arg externalBinds=<json>` — a JSON
+ The install action also takes `--arg externalBinds=<json>` — a JSON
 `ExternalBind` array (omitted = none; there is no default bind set).
 See notes/external-binds.md. And `--arg ando=true|false` (default
 false) sets the initial per-distro ando enablement — see notes/ando.md.
+And `--arg desktops=<ids>` (comma-separated, e.g. `xfce,lxqt`) selects
+optional desktop environments to install after the base set — see
+notes/de-desktops.md.
 
 **RUNINSIDE form** — run a command inside an installed chroot. The
 broker reads the install's recorded method from `metadata.json` and
@@ -381,6 +384,7 @@ at its definition.
 | `get-ando` (`installId`) | SettingsActions | Print the effective ando state for `installId` (override if set, else metadata). |
 | `launcher-list` (`installId`, optional `showHidden`) | LauncherActions | Print the launcher entry list as a JSON array (`{id, name, exec, terminal, path, hidden}` per element). Mirrors what `LauncherActivity` renders: hidden entries are filtered out unless `showHidden=true` (notes/launcher.md). |
 | `set-entry-hidden` (`installId`, `entryId`, `hidden`) | LauncherActions | Persist launcher hide/unhide for a desktop-entry id through the same locked `Installation.hiddenDesktopIds` metadata write the launcher UI uses. Durable — tests must unhide in cleanup. Prints the resulting hidden-id list. |
+| `launch-entry` (`installId`, `entryId`) | LauncherActions | Fire-and-forget launch of a launcher entry through the same `EntryLauncher` dispatch the UI uses — orientation force and the desktop-session single-host hook both live there. Returns immediately; the launch continues in the app process (see notes/launcher.md). Useful for driving DE-session launches deterministically without UI automation. |
 
 **Rule for input actions: every driver goes through `TawcInputConnection`.**
 There is intentionally no broker action that calls `NativeBridge.native*`

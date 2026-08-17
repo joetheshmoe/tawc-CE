@@ -1,7 +1,10 @@
 package me.phie.tawc.install.distro.apt
 
+import me.phie.tawc.install.InstallProgress
+import me.phie.tawc.install.InstallStage
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
+import me.phie.tawc.install.PackageProgressParser
 import me.phie.tawc.install.ShellDefaults
 import java.io.IOException
 
@@ -116,7 +119,12 @@ internal object AptCommon {
         method: InstallationMethod,
         rootfs: String,
         log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit = {},
     ) {
+        val parser = PackageProgressParser(
+            downloadLabel = "Updating package index",
+            syncLabel = "Updating package index",
+        )
         val res = method.runInside(
             rootfs,
             """
@@ -125,7 +133,7 @@ internal object AptCommon {
             set -e
             apt-get update
             """.trimIndent(),
-            onLine = filteringLog(log),
+            onLine = lineSink(InstallStage.PKG_KEYRING, parser, log, progress),
         )
         if (!res.ok) {
             throw IOException("apt-get update failed (exit=${res.exitCode})")
@@ -137,7 +145,9 @@ internal object AptCommon {
         rootfs: String,
         packages: List<String>,
         log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit = {},
     ) {
+        val parser = PackageProgressParser()
         val res = method.runInside(
             rootfs,
             """
@@ -149,7 +159,7 @@ internal object AptCommon {
             apt-get clean
             rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb
             """.trimIndent(),
-            onLine = filteringLog(log),
+            onLine = lineSink(InstallStage.PKG_INSTALL, parser, log, progress),
         )
         if (!res.ok) {
             throw IOException("apt base-package install failed (exit=${res.exitCode})")
@@ -164,5 +174,60 @@ internal object AptCommon {
             trimmed.startsWith("Fetched ") ||
             trimmed.matches(Regex("""^\d+% \[.*"""))
         if (!drop) log("apt: $line")
+    }
+
+    /**
+     * Install user-selected extra packages (desktop environments) after
+     * the base set, then run any per-DE [setupScript] as root inside the
+     * rootfs. `apt-get update` first so a fresh index covers the new
+     * package names; the base install already ran it but the index may
+     * be stale by the time DEs were chosen.
+     */
+    fun installExtraPackages(
+        method: InstallationMethod,
+        rootfs: String,
+        packages: List<String>,
+        setupScript: String,
+        log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit = {},
+    ) {
+        if (packages.isEmpty() && setupScript.isBlank()) return
+        val script = buildString {
+            appendLine("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            appendLine("export DEBIAN_FRONTEND=noninteractive")
+            appendLine("set -e")
+            if (packages.isNotEmpty()) {
+                appendLine("apt-get update")
+                appendLine("apt-get -y install --no-install-recommends ${packages.joinToString(" ")}")
+                appendLine("apt-get clean")
+                appendLine("rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb")
+            }
+            if (setupScript.isNotBlank()) {
+                appendLine(setupScript)
+            }
+        }
+        val parser = PackageProgressParser()
+        val res = method.runInside(rootfs, script.trimIndent(), onLine = lineSink(InstallStage.EXTRA_PACKAGES, parser, log, progress))
+        if (!res.ok) {
+            throw IOException("apt extra-package install failed (exit=${res.exitCode})")
+        }
+    }
+
+    /**
+     * Combine log filtering (keep the install log readable) with progress
+     * parsing (feed every line to [parser] and emit [InstallProgress] ticks
+     * under [stage]). The two are independent: the log drops `Get:`/`Fetched`
+     * noise while the parser needs exactly those lines.
+     */
+    private fun lineSink(
+        stage: InstallStage,
+        parser: PackageProgressParser,
+        log: (String) -> Unit,
+        progress: (InstallProgress) -> Unit,
+    ): (String) -> Unit = { line ->
+        filteringLog(log)(line)
+        parser.feed(line)?.let { tick ->
+            progress(InstallProgress(stage, tick.message, tick.percent))
+        }
     }
 }

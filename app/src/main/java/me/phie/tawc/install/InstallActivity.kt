@@ -101,6 +101,13 @@ class InstallActivity : AppCompatActivity() {
      *  methods; persisted across rotations. */
     private var andoEnabled: Boolean = false
 
+    /** Optional desktop-environment ids the user ticked (see
+     *  [DesktopOptions]). Shown only for distros that support extra
+     *  package installs. */
+    private val selectedDesktops = mutableSetOf<String>()
+    private var desktopSection: LinearLayout? = null
+    private var desktopSummary: TextView? = null
+
     private lateinit var formScroll: ScrollView
     private lateinit var formSection: LinearLayout
     private lateinit var methodGroup: RadioGroup
@@ -133,6 +140,8 @@ class InstallActivity : AppCompatActivity() {
             else -> false
         }
         andoEnabled = savedInstanceState?.getBoolean(KEY_ANDO) == true
+        savedInstanceState?.getString(KEY_DESKTOPS)?.split(',')?.filter { it.isNotEmpty() }
+            ?.let { selectedDesktops.addAll(it) }
         pendingBinds.clear()
         savedInstanceState?.getString(KEY_BINDS)?.let { savedBinds ->
             pendingBinds.addAll(
@@ -174,6 +183,7 @@ class InstallActivity : AppCompatActivity() {
         outState.putBoolean(KEY_OTHER_DISTROS, otherDistrosExpanded)
         useCacheProxy?.let { outState.putBoolean(KEY_USE_PROXY, it) }
         outState.putBoolean(KEY_ANDO, andoEnabled)
+        outState.putString(KEY_DESKTOPS, selectedDesktops.joinToString(","))
         outState.putString(KEY_BINDS, ExternalBind.toJsonArray(pendingBinds).toString())
     }
 
@@ -202,6 +212,17 @@ class InstallActivity : AppCompatActivity() {
         }
 
         s.addView(buildInstallDirField(available, savedLabelText), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+
+        // Optional desktop-environment checkboxes. Shown only when the
+        // selected distro can install extras (apt family today); hidden
+        // otherwise so the form doesn't promise what the distro can't
+        // deliver. Visibility is driven by selectDistro below.
+        run {
+            val section = buildDesktopSection()
+            desktopSection = section
+            s.addView(section, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+            updateDesktopSectionVisibility()
+        }
 
         // Method picker + info link only render when this APK ships
         // more than one install method. The single-method case (default
@@ -379,6 +400,7 @@ class InstallActivity : AppCompatActivity() {
             // selection keeps its saved flavor.
             selectedBootstrap = null
             updateBootstrapRow()
+            updateDesktopSectionVisibility()
         }
         if (updateLabel && !labelEdited) {
             DistroRegistry.availableForHost().firstOrNull { it.key == key }
@@ -393,6 +415,87 @@ class InstallActivity : AppCompatActivity() {
         otherDistroToggle?.text = getString(
             if (expanded) R.string.install_distro_other_hide else R.string.install_distro_other_show,
         )
+    }
+
+    /**
+     * "Desktop environments (optional)" checkbox section. One row per
+     * [DesktopOptions.ALL] entry: label + description + a checkbox.
+     * Selections persist across rotation via [selectedDesktops]. The
+     * section itself only renders when the selected distro supports
+     * extra package installs (see [updateDesktopSectionVisibility]).
+     */
+    private fun buildDesktopSection(): LinearLayout {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        container.addView(
+            TextView(this).apply {
+                text = getString(R.string.install_desktops_label)
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+            },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT),
+        )
+        container.addView(
+            TextView(this).apply {
+                text = getString(R.string.install_desktops_hint)
+                textSize = 12f
+                alpha = 0.7f
+            },
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = (4 * resources.displayMetrics.density).toInt()),
+        )
+
+        for (option in DesktopOptions.ALL) {
+            container.addView(
+                CheckBox(this).apply {
+                    text = option.label
+                    textSize = 15f
+                    isChecked = option.id in selectedDesktops
+                    setOnCheckedChangeListener { _, checked ->
+                        if (checked) selectedDesktops.add(option.id)
+                        else selectedDesktops.remove(option.id)
+                        updateDesktopSummary()
+                    }
+                },
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+            )
+            container.addView(
+                TextView(this).apply {
+                    text = option.description
+                    textSize = 12f
+                    alpha = 0.7f
+                    setPadding((16 * resources.displayMetrics.density).toInt(), 0, 0, 0)
+                },
+                verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = 6),
+            )
+        }
+
+        // "What you'll get" summary — this is the part that makes the
+        // choice concrete (bare terminal vs terminal + desktops), which
+        // the user explicitly flagged as unclear.
+        desktopSummary = TextView(this).apply {
+            textSize = 13f
+            alpha = 0.85f
+        }
+        container.addView(desktopSummary, verticalLp(MATCH_PARENT, WRAP_CONTENT))
+        updateDesktopSummary()
+        return container
+    }
+
+    /** Refresh the "what you'll get" line from [selectedDesktops]. */
+    private fun updateDesktopSummary() {
+        val summary = desktopSummary ?: return
+        val labels = DesktopOptions.ALL.filter { it.id in selectedDesktops }.map { it.label }
+        summary.text = if (labels.isEmpty()) {
+            getString(R.string.install_desktops_none_hint)
+        } else {
+            getString(R.string.install_desktops_selected_hint, labels.joinToString(", "))
+        }
+    }
+
+    /** Show/hide the desktop section for the current distro pick. */
+    private fun updateDesktopSectionVisibility() {
+        val section = desktopSection ?: return
+        val distro = DistroRegistry.availableForHost().firstOrNull { it.key == selectedDistro }
+        section.visibility = if (distro?.supportsExtraPackages == true) View.VISIBLE else View.GONE
     }
 
     /**
@@ -676,7 +779,7 @@ class InstallActivity : AppCompatActivity() {
         val launch = {
             InstallationService.startInstall(
                 this, targetId, methodKey, distroKey, labelText, mirrorProxyUrl, bindsJson, andoEnabled,
-                selectedBootstrap,
+                selectedBootstrap, selectedDesktops.joinToString(","),
             )
             startActivity(LogScreenActivity.intentFor(this, "install:$targetId"))
             finish()
@@ -713,6 +816,7 @@ class InstallActivity : AppCompatActivity() {
         private const val KEY_USE_PROXY = "tawc.install.useCacheProxy"
         private const val KEY_BINDS = "tawc.install.externalBinds"
         private const val KEY_ANDO = "tawc.install.ando"
+        private const val KEY_DESKTOPS = "tawc.install.desktops"
         private const val KEY_BOOTSTRAP = "tawc.install.bootstrap"
     }
 }

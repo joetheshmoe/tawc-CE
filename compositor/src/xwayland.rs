@@ -73,6 +73,16 @@ fn configure_x11_toplevel_for_host(
         return None;
     }
 
+    // Dock-type windows are panels: leave their natural geometry alone —
+    // forcing them to the full host size would stretch the panel across
+    // the whole screen. They render at the position the client requested
+    // (a top-anchored bar sits at (0,0)).
+    if let Some(t) = surface.window_type() {
+        if t == smithay::xwayland::xwm::WmWindowType::Dock {
+            return None;
+        }
+    }
+
     let (w, h) = state.host_logical_size(host_id)?;
     let mut geo = surface.geometry();
     geo.loc = (0, 0).into();
@@ -562,6 +572,7 @@ impl XwmHandler for TawcState {
         // Translate X11 parent/transient state into the shared desktop
         // host-placement policy.
         let assignment = assign_host_for_x11(self, &window);
+        self.note_desktop_session_host(&assignment.host);
         if let Err(e) = window.set_mapped(true) {
             warn!("xwayland: set_mapped(true) failed: {}", e);
             return;
@@ -593,6 +604,7 @@ impl XwmHandler for TawcState {
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
         let assignment = assign_host_for_x11(self, &window);
+        self.note_desktop_session_host(&assignment.host);
         self.x11_surfaces.push(window.clone());
         window
             .user_data()
@@ -839,7 +851,7 @@ fn assign_host_for_x11(
     crate::desktop::DesktopRegistry::choose_host(
         parent_host,
         state.single_activity_mode,
-        state.hosts.keys().next().cloned(),
+        state.existing_host_for_session(),
     )
 }
 

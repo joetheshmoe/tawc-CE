@@ -83,6 +83,11 @@ pub struct Entry {
     /// decide whether an entry is user-editable (managed dir) without
     /// re-deriving the scan layout.
     pub path: String,
+    /// Preferred screen orientation from the `.desktop` file's
+    /// `X-Tawc-Orientation` key (`landscape` / `portrait`, else empty).
+    /// A suggestion only — the per-entry setting in Installation
+    /// metadata overrides it at launch time.
+    pub orientation: String,
 }
 
 /// Scan [rootfs] for `.desktop` apps. Returns entries sorted by name
@@ -133,8 +138,10 @@ fn scan_entries(rootfs: &Path, launchable_only: bool) -> Vec<Entry> {
             terminal: de.terminal(),
             icon_path,
             path: de.path.to_string_lossy().into_owned(),
+            orientation: entry_orientation(&de),
         });
     }
+    push_known_desktops(rootfs, &mut entries);
 
     // De-dup by id in walk order *before* sorting: Iter walks the dirs
     // in APPS_SUBDIRS order, which is user-first, so the first
@@ -215,8 +222,82 @@ fn normalize_desktop_id(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Desktop-environment entry synthesized by [scan_entries] when the
+/// session binary exists in the rootfs. This is how DEs become
+/// launchable without writing `.desktop` files: install the DE's
+/// package, and the launcher picks it up. Adding a new DE = one row
+/// here (plus, for desktop DEs, an `X-Tawc-Orientation`-equivalent
+/// default below).
+struct KnownDesktop {
+    /// Stable id — `tawc-de-` prefix keeps it out of .desktop id space.
+    id: &'static str,
+    name: &'static str,
+    comment: &'static str,
+    /// Binary under `<rootfs>/usr/bin` whose presence enables the entry.
+    bin: &'static str,
+    /// Exec line run through `bash -lc`. `dbus-run-session` supplies a
+    /// session bus — none of these shells run under one otherwise.
+    exec: &'static str,
+    /// Icon name resolved via [resolve_icon] inside the rootfs.
+    icon: &'static str,
+    /// Default orientation force: `landscape` / `portrait` / `""`.
+    orientation: &'static str,
+}
+
+const KNOWN_DESKTOPS: &[KnownDesktop] = &[
+    KnownDesktop {
+        id: "tawc-de-xfce",
+        name: "XFCE Desktop",
+        comment: "Lightweight desktop environment",
+        bin: "xfce4-session",
+        exec: "dbus-run-session -- xfce4-session",
+        // `xfce4-logo` (not `xfce4`) — the hicolor theme ships
+        // `xfce4-logo.png`; `xfce4` is SVG-only and wouldn't resolve.
+        icon: "xfce4-logo",
+        orientation: "landscape",
+    },
+    KnownDesktop {
+        id: "tawc-de-lxqt",
+        name: "LXQt Desktop",
+        comment: "Lightweight Qt desktop environment",
+        bin: "startlxqt",
+        exec: "dbus-run-session -- startlxqt",
+        icon: "lxqt",
+        orientation: "landscape",
+    },
+];
+
+/// Append a [KnownDesktop] entry for every table row whose session
+/// binary is present in [rootfs]. Detection is a plain `usr/bin`
+/// existence check — a package installed but never run still enables
+/// its DE, which is the point (install → it appears).
+fn push_known_desktops(rootfs: &Path, entries: &mut Vec<Entry>) {
+    for de in KNOWN_DESKTOPS {
+        if !rootfs.join("usr/bin").join(de.bin).is_file() {
+            continue;
+        }
+        let icon_path = resolve_icon(rootfs, de.icon)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        entries.push(Entry {
+            id: de.id.to_string(),
+            name: de.name.to_string(),
+            comment: de.comment.to_string(),
+            exec: de.exec.to_string(),
+            terminal: false,
+            icon_path,
+            // No .desktop file backs these — the "managed dir" check
+            // (path prefix) never matches an empty path, so they get no
+            // Edit action, matching their non-file nature.
+            path: String::new(),
+            orientation: de.orientation.to_string(),
+        });
+    }
+}
+
 /// JSON-encode the scan result for the JNI boundary. Each element is an
-/// object: `{id, name, comment, exec, terminal, iconPath, path}`. Always
+/// object: `{id, name, comment, exec, terminal, iconPath, path,
+/// orientation}`. Always
 /// returns a valid JSON array (empty `[]` if the rootfs has no apps).
 pub fn scan_json(rootfs: &Path) -> String {
     let entries = scan_entries(rootfs, true);
@@ -231,6 +312,7 @@ pub fn scan_json(rootfs: &Path) -> String {
                 "terminal": e.terminal,
                 "iconPath": e.icon_path,
                 "path": e.path,
+                "orientation": e.orientation,
             })
         })
         .collect();
@@ -241,6 +323,17 @@ pub fn scan_json(rootfs: &Path) -> String {
 /// `scan_entries`) also requires not `NoDisplay`.
 fn is_relevant(de: &DesktopEntry, launchable_only: bool) -> bool {
     de.type_() == Some("Application") && !de.hidden() && (!launchable_only || !de.no_display())
+}
+
+/// Parse the entry's `X-Tawc-Orientation` key. Only `landscape` and
+/// `portrait` are honored; anything else (or absent) reads as
+/// "follow the system".
+fn entry_orientation(de: &DesktopEntry) -> String {
+    match de.desktop_entry("X-Tawc-Orientation") {
+        Some("landscape") => "landscape".to_string(),
+        Some("portrait") => "portrait".to_string(),
+        _ => String::new(),
+    }
 }
 
 /// Find an absolute on-device path for [icon] inside [rootfs], or None.

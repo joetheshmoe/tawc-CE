@@ -54,6 +54,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".onboarding.OnboardingActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Tawc"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- CompositorActivity hosts one window. The combination of
              documentLaunchMode="intoExisting", taskAffinity="" and a
              unique tawc://activity/<id> URI per launch makes Android
@@ -85,6 +91,16 @@
             android:name=".install.InstallActivity"
             android:exported="false"
             android:label="@string/title_install_distro" />
+
+        <activity
+            android:name=".install.AppStoreActivity"
+            android:exported="false"
+            android:label="@string/title_app_store" />
+
+        <activity
+            android:name=".install.FlatpakStoreActivity"
+            android:exported="false"
+            android:label="@string/title_flatpak_store" />
 
         <activity
             android:name=".install.DistroInfoActivity"

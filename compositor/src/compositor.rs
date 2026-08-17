@@ -34,7 +34,7 @@ use smithay::reexports::wayland_protocols_misc::server_decoration::server::{
 use smithay::utils::Serial;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    self, CompositorClientState, CompositorHandler, CompositorState,
+    self, CompositorClientState, CompositorHandler, CompositorState, get_role,
 };
 use smithay::wayland::fractional_scale::{
     self, FractionalScaleHandler, FractionalScaleManagerState,
@@ -57,6 +57,8 @@ use smithay::wayland::shell::xdg::{
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
+use smithay::wayland::shell::wlr_layer::{Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState};
+use smithay::desktop::layer_map_for_output;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xwayland_shell::XWaylandShellState;
@@ -103,6 +105,9 @@ pub struct TawcState {
     pub compositor_state: CompositorState,
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
+    // wlr-layer-shell state: panels/docks/wallpapers register here and get
+    // edge-anchored, correctly-sized geometry (see notes/de-desktops.md).
+    pub layer_shell_state: WlrLayerShellState,
     // Held to keep the xdg-output manager global registered for the
     // display lifetime; Smithay's delegate macro reaches it through the
     // `OutputHandler` impl.
@@ -169,9 +174,14 @@ pub struct TawcState {
     /// When true, the policy assigns every toplevel to the same Activity
     /// (the existing host or the hardcoded `"primary"` if none exists yet)
     /// rather than spawning a new Activity per toplevel. Defaults to false
-    /// (multi-window) since phase 5; will be exposed as a SharedPreference
-    /// in the polish pass.
+    /// (multi-window) since phase 5; driven live by desktop-environment
+    /// launches (see `DesktopSessionChanged`).
     pub single_activity_mode: bool,
+
+    /// First host minted during a desktop session, pinned so later DE
+    /// windows collapse onto it even before that Activity has registered
+    /// (Android spawn latency). Cleared when the session ends.
+    pub desktop_session_host: Option<ActivityId>,
 
     /// Canonical fullscreen state per ActivityId, retained even before
     /// the Activity registers its SurfaceView.
@@ -273,6 +283,7 @@ impl TawcState {
         // get the real value through wp_fractional_scale_v1.
         let compositor_state = CompositorState::new_v6::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let kde_decoration_state =
@@ -337,6 +348,7 @@ impl TawcState {
             compositor_state,
             shm_state,
             xdg_shell_state,
+            layer_shell_state,
             output_manager_state,
             xdg_decoration_state,
             kde_decoration_state,
@@ -366,8 +378,12 @@ impl TawcState {
             window_metadata: HashMap::new(),
             app_metadata_cache: HashMap::new(),
             // Phase 5: default to multi-window. Each non-child toplevel
-            // gets its own Android task / recents card.
-            single_activity_mode: false,
+            // gets its own Android task / recents card. A desktop
+            // environment launch flips this to single-activity so the
+            // DE session shares one task; seeded from the sticky flag
+            // because EntryLauncher sets it before the compositor starts.
+            single_activity_mode: crate::host::desktop_session(),
+            desktop_session_host: None,
             xwayland_shell_state,
             xwayland_enabled,
             xwayland_source: None,
@@ -529,12 +545,41 @@ impl TawcState {
         &mut self,
         toplevel: &ToplevelSurface,
     ) -> crate::desktop::HostAssignment {
-        self.desktop.assign_wayland_toplevel(
+        let assignment = self.desktop.assign_wayland_toplevel(
             toplevel.wl_surface().clone(),
             toplevel.parent(),
             self.single_activity_mode,
-            self.hosts.keys().next().cloned(),
-        )
+            self.existing_host_for_session(),
+        );
+        self.note_desktop_session_host(&assignment.host);
+        assignment
+    }
+
+    /// The host a new toplevel should join when the current policy
+    /// collapses onto one Activity. During a desktop session
+    /// ([single_activity_mode]) this is the session's pinned host
+    /// (first window of the DE), falling back to the first live host;
+    /// otherwise it is irrelevant (multi-window ignores it) but matches
+    /// the pre-session behaviour of passing the first host through.
+    pub fn existing_host_for_session(&self) -> Option<ActivityId> {
+        if self.single_activity_mode {
+            self.desktop_session_host
+                .clone()
+                .or_else(|| self.hosts.keys().next().cloned())
+        } else {
+            self.hosts.keys().next().cloned()
+        }
+    }
+
+    /// Record [host_id] as the desktop session's pinned host if this is
+    /// the first host minted during a session. Without this, two DE
+    /// windows that map before the first Activity registers (Android
+    /// activity spawn latency) each mint their own host and the session
+    /// fragments into separate tasks anyway.
+    pub fn note_desktop_session_host(&mut self, host_id: &ActivityId) {
+        if self.single_activity_mode && self.desktop_session_host.is_none() {
+            self.desktop_session_host = Some(host_id.clone());
+        }
     }
 
     pub fn set_host_fullscreen(&mut self, host_id: &ActivityId, fullscreen: bool) {
@@ -893,6 +938,12 @@ impl CompositorHandler for TawcState {
         self.sync_desktop_hosts();
         self.buffer_commit_pending = true;
 
+        // A layer-surface commit may carry new anchor/size/margin state —
+        // re-run the layer geometry so panels re-flow at their new edge.
+        if get_role(surface) == Some(smithay::wayland::shell::wlr_layer::LAYER_SURFACE_ROLE) {
+            arrange_layers(self);
+        }
+
         crate::gtk3_menus_workaround::after_commit(self, surface);
     }
 }
@@ -1058,6 +1109,88 @@ impl XdgShellHandler for TawcState {
 }
 
 impl OutputHandler for TawcState {}
+
+// ---------------------------------------------------------------------------
+// wlr-layer-shell: panels, docks, wallpapers, overlays.
+//
+// tawc has a single output, so every layer surface maps onto it. The
+// LayerMap's `arrange` computes the anchored geometry (full-width bars for
+// top-anchored panels, etc.) and the render pass draws them at the arranged
+// location, Background/Bottom below windows and Top/Overlay above.
+// ---------------------------------------------------------------------------
+
+impl WlrLayerShellHandler for TawcState {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: LayerSurface,
+        _output: Option<wl_output::WlOutput>,
+        _layer: Layer,
+        namespace: String,
+    ) {
+        info!("layer surface '{}' mapped", namespace);
+        // Layer surfaces render on the output's host. A DE session whose
+        // windows are all layer surfaces (panel + wallpaper) never maps a
+        // toplevel, so nothing would create the Android window — mint one
+        // here. Pinned like the toplevel path so a second layer surface
+        // mapping before the Activity registers doesn't mint another.
+        if self.single_activity_mode
+            && self.desktop_session_host.is_none()
+            && self.hosts.is_empty()
+        {
+            let id = crate::host::new_activity_id();
+            self.desktop_session_host = Some(id.clone());
+            crate::spawn_activity_from_native(&id);
+        }
+        // Wrap the protocol surface in smithay's desktop LayerSurface and
+        // map it onto tawc's single output. `map_layer` arranges the
+        // geometry (edge anchoring, exclusive zones); send the initial
+        // configure so the client renders at the arranged size.
+        let layer = smithay::desktop::LayerSurface::new(surface, namespace);
+        let output = self.output.clone();
+        let mut map = layer_map_for_output(&output);
+        if map.map_layer(&layer).is_ok() {
+            layer.layer_surface().send_configure();
+        }
+    }
+
+    fn layer_destroyed(&mut self, _surface: LayerSurface) {
+        let output = self.output.clone();
+        layer_map_for_output(&output).cleanup();
+    }
+
+    fn new_popup(&mut self, _parent: LayerSurface, _popup: PopupSurface) {
+        // The popup was already configured + tracked by the xdg shell's
+        // `new_popup` (a layer-shell popup is created via
+        // `xdg_surface.get_popup`, which routes through XdgShellHandler
+        // first; the layer-shell `get_popup` only pins its parent). Sending
+        // another configure here would fail with `NotReactive`.
+    }
+}
+
+/// Re-run layer geometry after an output size change or layer commit.
+pub fn arrange_layers(state: &mut TawcState) {
+    let output = state.output.clone();
+    layer_map_for_output(&output).arrange();
+}
+
+/// The layer surfaces mapped on tawc's output with their arranged
+/// (logical) locations, Background first and Overlay last.
+pub fn mapped_layers(
+    state: &TawcState,
+) -> Vec<(smithay::desktop::LayerSurface, smithay::utils::Point<i32, smithay::utils::Logical>)> {
+    let output = state.output.clone();
+    let map = layer_map_for_output(&output);
+    map.layers()
+        .filter_map(|layer| {
+            let loc = map.layer_geometry(layer)?.loc;
+            Some((layer.clone(), loc))
+        })
+        .collect()
+}
 
 impl FractionalScaleHandler for TawcState {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
